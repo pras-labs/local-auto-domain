@@ -9,6 +9,12 @@ import (
 	"strings"
 )
 
+// dnsmasqPort is the port dnsmasq listens on. Using a non-privileged port lets
+// dnsmasq run as the logged-in user (LaunchAgent) rather than root (LaunchDaemon),
+// so the lad daemon can send SIGHUP without sudo. /etc/resolver/test includes the
+// matching port directive so mDNSResponder routes queries to the right port.
+const dnsmasqPort = 5300
+
 // DropInDir returns the path where per-domain config files are written on macOS.
 func DropInDir() string {
 	// Support both Intel (/usr/local) and Apple Silicon (/opt/homebrew) Homebrew prefixes.
@@ -51,12 +57,28 @@ func Setup() error {
 		return fmt.Errorf("updating dnsmasq.conf: %w", err)
 	}
 
-	// 3. Create drop-in dir owned by current user
+	// 3. Create drop-in dir owned by current user; write startup configs.
 	if err := os.MkdirAll(dropInDir, 0755); err != nil {
 		return fmt.Errorf("creating drop-in dir: %w", err)
 	}
+	// 00-port.conf: sets the listen port (read at startup, not on SIGHUP).
+	portConf := filepath.Join(dropInDir, "00-port.conf")
+	if err := os.WriteFile(portConf, []byte(fmt.Sprintf("port=%d\n", dnsmasqPort)), 0644); err != nil {
+		return fmt.Errorf("writing port config: %w", err)
+	}
+	// addn-hosts: dnsmasq re-reads this file on SIGHUP, making it the mechanism
+	// for dynamic domain updates without restarting dnsmasq.
+	hostsFile := filepath.Join(dropInDir, "hosts")
+	hostsLine := fmt.Sprintf("addn-hosts=%s", hostsFile)
+	if err := ensureLineInFile(dnsmasqConf, hostsLine); err != nil {
+		return fmt.Errorf("updating dnsmasq.conf with addn-hosts: %w", err)
+	}
+	// Create empty hosts file so dnsmasq doesn't log a warning at startup.
+	if _, err := os.Stat(hostsFile); os.IsNotExist(err) {
+		os.WriteFile(hostsFile, []byte{}, 0644) //nolint:errcheck
+	}
 
-	// 4. Write /etc/resolver/test (requires sudo)
+	// 4. Write /etc/resolver/test with port directive (requires sudo)
 	if err := writeResolver(); err != nil {
 		return fmt.Errorf("writing resolver: %w", err)
 	}
@@ -66,10 +88,14 @@ func Setup() error {
 		return fmt.Errorf("loopback aliases: %w", err)
 	}
 
-	// 6. Start/restart dnsmasq via brew services
-	fmt.Println("Starting dnsmasq...")
-	if out, err := exec.Command(filepath.Join(prefix, "bin/brew"), "services", "restart", "dnsmasq").CombinedOutput(); err != nil {
-		return fmt.Errorf("brew services restart dnsmasq: %w\n%s", err, out)
+	// 6. Stop any system-level dnsmasq from a previous setup, then start as
+	// the logged-in user so it runs as a LaunchAgent. This allows the lad daemon
+	// to send SIGHUP without sudo.
+	fmt.Println("Starting dnsmasq as current user...")
+	brewBin := filepath.Join(prefix, "bin/brew")
+	exec.Command(brewBin, "services", "stop", "dnsmasq").Run() //nolint:errcheck — best-effort
+	if err := brewServicesStart(brewBin); err != nil {
+		return fmt.Errorf("starting dnsmasq: %w", err)
 	}
 
 	fmt.Println("Setup complete. Domains under .tunnel.test are ready.")
@@ -119,17 +145,49 @@ func setupLoopbackAliases() error {
 	return nil
 }
 
+// brewServicesStart starts dnsmasq as the logged-in user even when lad setup
+// is invoked via sudo. Running as a user-level LaunchAgent (not a root LaunchDaemon)
+// means the lad daemon can send SIGHUP without elevated privileges.
+//
+// sudo -u <user> is not sufficient: launchctl bootstrap gui/<uid> requires the
+// process to hold the user's GUI session token, which sudo does not provide.
+// launchctl asuser <uid> runs the command inside the user's session context and
+// carries the correct token.
+func brewServicesStart(brewBin string) error {
+	sudoUser := os.Getenv("SUDO_USER")
+	if sudoUser == "" {
+		out, err := exec.Command(brewBin, "services", "start", "dnsmasq").CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("%w\n%s", err, out)
+		}
+		return nil
+	}
+
+	// Resolve the numeric UID — launchctl asuser requires it.
+	uidBytes, err := exec.Command("id", "-u", sudoUser).Output()
+	if err != nil {
+		return fmt.Errorf("resolving UID for %s: %w", sudoUser, err)
+	}
+	uid := strings.TrimSpace(string(uidBytes))
+
+	out, err := exec.Command("launchctl", "asuser", uid, brewBin, "services", "start", "dnsmasq").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%w\n%s", err, out)
+	}
+	return nil
+}
+
 // writeResolver writes /etc/resolver/test via sudo so macOS routes *.tunnel.test
-// queries to dnsmasq on 127.0.0.1. Note: /etc/resolver/tunnel.localhost was the
+// queries to dnsmasq on port 5300. Note: /etc/resolver/tunnel.localhost was the
 // previous path; it is removed by Teardown but not written here.
 func writeResolver() error {
 	const resolverDir = "/etc/resolver"
 	const resolverFile = "/etc/resolver/test"
-	const content = "nameserver 127.0.0.1\n"
+	content := fmt.Sprintf("nameserver 127.0.0.1\nport %d\n", dnsmasqPort)
 
 	// Check if already correct
 	if existing, err := os.ReadFile(resolverFile); err == nil {
-		if strings.Contains(string(existing), "127.0.0.1") {
+		if string(existing) == content {
 			return nil
 		}
 	}
@@ -176,12 +234,20 @@ func Teardown() error {
 	// Remove drop-in dir (user-owned)
 	os.RemoveAll(dropInDir)
 
-	// Remove conf-dir line from dnsmasq.conf (Homebrew prefix — user-writable)
+	// Remove conf-dir and addn-hosts lines from dnsmasq.conf (user-writable)
 	dnsmasqConf := filepath.Join(prefix, "etc/dnsmasq.conf")
 	removeLineFromFile(dnsmasqConf, fmt.Sprintf("conf-dir=%s,*.conf", dropInDir))
+	removeLineFromFile(dnsmasqConf, fmt.Sprintf("addn-hosts=%s/hosts", dropInDir))
 
-	// Restart dnsmasq so it picks up the removed config
-	exec.Command(filepath.Join(prefix, "bin/brew"), "services", "restart", "dnsmasq").Run()
+	// Stop dnsmasq: try system-level (old setup) then user-level (new setup).
+	brewBin := filepath.Join(prefix, "bin/brew")
+	exec.Command(brewBin, "services", "stop", "dnsmasq").Run() //nolint:errcheck
+	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
+		if uidBytes, err := exec.Command("id", "-u", sudoUser).Output(); err == nil {
+			uid := strings.TrimSpace(string(uidBytes))
+			exec.Command("launchctl", "asuser", uid, brewBin, "services", "stop", "dnsmasq").Run() //nolint:errcheck
+		}
+	}
 
 	fmt.Println("dnsmasq configuration removed.")
 	return nil

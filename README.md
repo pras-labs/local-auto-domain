@@ -262,7 +262,7 @@ local-auto-domain/
 
 **IPC**: Daemon exposes `GET /state` over a Unix socket at `~/.local/share/local-auto-domain/daemon.sock`. CLI commands talk to it directly.
 
-**DNS**: Each domain gets its own dnsmasq config file in `/etc/dnsmasq.d/local-auto-domain/` (or Homebrew equivalent on macOS). dnsmasq is reloaded via `SIGHUP` on each change — no restart needed.
+**DNS**: The daemon maintains a single `hosts` file at `{dnsmasq.d}/local-auto-domain/hosts` registered with dnsmasq via `addn-hosts`. dnsmasq re-reads `addn-hosts` files on `SIGHUP` — no restart needed. (`conf-dir` entries are startup-only and are not re-read on SIGHUP; per-port `port-N.conf` state files exist solely for daemon-restart recovery.) On macOS, dnsmasq runs on port 5300 as a user-level LaunchAgent so the daemon can send SIGHUP without sudo. On Linux, a NOPASSWD sudoers rule written by `lad setup` allows `sudo systemctl reload dnsmasq` without a prompt.
 
 **Routing**: Unique loopback IPs (`127.0.1.X`) mean multiple domains can share the same proxy port (e.g., two HTTP services both accessible on `:8080` via different IPs). Works for any TCP protocol — HTTP, PostgreSQL, Redis, etc.
 
@@ -276,15 +276,16 @@ local-auto-domain/
 | `lad daemon`             | user                                              |
 | `lad install-service`    | user                                              |
 | `lad uninstall`          | sudo (removes system CA, loopback aliases)        |
-| Runtime dnsmasq updates  | user (dnsmasq.d dir is user-writable after setup) |
-| Loopback aliases (macOS) | created by LaunchDaemon at boot; no runtime sudo  |
+| Runtime dnsmasq updates (macOS) | user — dnsmasq runs as user LaunchAgent on port 5300      |
+| Runtime dnsmasq updates (Linux) | `sudo systemctl reload dnsmasq` via NOPASSWD sudoers rule |
+| Loopback aliases (macOS)        | created by LaunchDaemon at boot; no runtime sudo          |
 
 ## Platforms
 
 |                     | macOS                            | Linux                             |
 | ------------------- | -------------------------------- | --------------------------------- |
 | Socket detection    | `lsof`                           | `ss` + `/proc`                    |
-| DNS resolver config | `/etc/resolver/test`        | systemd-resolved split-DNS        |
+| DNS resolver config | `/etc/resolver/test` (port 5300) | systemd-resolved split-DNS    |
 | Loopback aliases    | `ifconfig lo0 alias` (setup)     | not needed (127.0.0.0/8 routable) |
 | Service manager     | launchd                          | systemd --user                    |
 | CA trust store      | system keychain (`security`)     | `update-ca-certificates`          |

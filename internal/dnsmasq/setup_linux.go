@@ -32,10 +32,20 @@ func Setup() error {
 		exec.Command("sudo", "chown", user, linuxDropInDir).Run()
 	}
 
-	// 3. Ensure main dnsmasq.conf includes our drop-in dir
+	// 3. Ensure main dnsmasq.conf includes our drop-in dir and addn-hosts file.
+	// addn-hosts is the key directive: dnsmasq re-reads it on SIGHUP, making
+	// domain updates take effect without restarting dnsmasq.
 	confLine := fmt.Sprintf("conf-dir=%s,*.conf", linuxDropInDir)
 	if err := ensureConf(confLine); err != nil {
 		return err
+	}
+	hostsFile := linuxDropInDir + "/hosts"
+	if err := ensureConf(fmt.Sprintf("addn-hosts=%s", hostsFile)); err != nil {
+		return err
+	}
+	// Create empty hosts file so dnsmasq doesn't log a warning at startup.
+	if _, statErr := os.Stat(hostsFile); os.IsNotExist(statErr) {
+		os.WriteFile(hostsFile, []byte{}, 0644) //nolint:errcheck
 	}
 
 	// 4. Configure systemd-resolved split-DNS if active
@@ -46,12 +56,22 @@ func Setup() error {
 	exec.Command("sudo", "systemctl", "enable", "--now", "dnsmasq").Run()
 	exec.Command("sudo", "systemctl", "restart", "dnsmasq").Run()
 
+	// 6. Write sudoers rule so the lad daemon can reload dnsmasq without a
+	// password prompt. dnsmasq runs as root/nobody on Linux (must bind port 53),
+	// so direct SIGHUP from a user process is blocked. systemctl reload is used
+	// instead of pkill: systemd tracks the correct PID even after privilege drop.
+	if err := writeSudoers(); err != nil {
+		fmt.Printf("Warning: could not write sudoers rule: %v\n", err)
+		fmt.Println("dnsmasq reload may fail at runtime; run 'sudo lad setup' to retry.")
+	}
+
 	fmt.Println("dnsmasq configured. Domains under .tunnel.test will resolve to 127.0.0.1")
 	return nil
 }
 
-// Teardown reverses Setup: removes systemd-resolved config, drop-in dir, and the
-// conf-dir line from /etc/dnsmasq.conf. Requires sudo for system files.
+// Teardown reverses Setup: removes systemd-resolved config, drop-in dir,
+// sudoers rule, and the conf-dir line from /etc/dnsmasq.conf.
+// Requires sudo for system files.
 func Teardown() error {
 	const resolvedDropIn = "/etc/systemd/resolved.conf.d/local-auto-domain.conf"
 
@@ -62,9 +82,13 @@ func Teardown() error {
 	// Remove drop-in dir (was created with sudo, needs sudo to remove)
 	exec.Command("sudo", "rm", "-rf", linuxDropInDir).Run()
 
-	// Remove conf-dir line from /etc/dnsmasq.conf via sudo tee
+	// Remove conf-dir and addn-hosts lines from /etc/dnsmasq.conf
 	confLine := fmt.Sprintf("conf-dir=%s,*.conf", linuxDropInDir)
 	removeLineFromFileWithSudo("/etc/dnsmasq.conf", confLine)
+	removeLineFromFileWithSudo("/etc/dnsmasq.conf", fmt.Sprintf("addn-hosts=%s/hosts", linuxDropInDir))
+
+	// Remove sudoers rule
+	exec.Command("sudo", "rm", "-f", sudoersPath).Run()
 
 	// Restart dnsmasq so it picks up the removed config
 	exec.Command("sudo", "systemctl", "restart", "dnsmasq").Run()
@@ -121,6 +145,37 @@ func ensureConf(line string) error {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("updating dnsmasq.conf: %w\n%s", err, out)
 	}
+	return nil
+}
+
+const sudoersPath = "/etc/sudoers.d/local-auto-domain"
+
+// writeSudoers writes a NOPASSWD rule allowing the current user to run
+// "sudo systemctl reload dnsmasq" without a password prompt. This is needed
+// because dnsmasq on Linux runs as root (must bind port 53) and drops to
+// nobody, so a user-space daemon cannot send it SIGHUP directly.
+func writeSudoers() error {
+	user := os.Getenv("SUDO_USER")
+	if user == "" {
+		user = os.Getenv("USER")
+	}
+	if user == "" || user == "root" {
+		return fmt.Errorf("could not determine non-root user for sudoers rule")
+	}
+
+	systemctlPath, err := exec.LookPath("systemctl")
+	if err != nil {
+		systemctlPath = "/usr/bin/systemctl"
+	}
+
+	content := fmt.Sprintf("%s ALL=(ALL) NOPASSWD: %s reload dnsmasq\n", user, systemctlPath)
+	cmd := exec.Command("sudo", "tee", sudoersPath)
+	cmd.Stdin = strings.NewReader(content)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("writing %s: %w\n%s", sudoersPath, err, out)
+	}
+	// sudoers files must not be world-writable
+	exec.Command("sudo", "chmod", "0440", sudoersPath).Run() //nolint:errcheck
 	return nil
 }
 

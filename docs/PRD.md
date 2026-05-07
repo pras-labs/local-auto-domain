@@ -213,21 +213,32 @@ If `lad setup` has not been run (no cert on disk), HTTPS forwards fall back to p
 
 RFC 2606 reserves `.test` for testing; it is never delegated in global DNS and is not special-cased by any OS resolver. See [ADR-009](adr/009-tld-change-to-tunnel-test.md) for the full decision record, including why `.tunnel.localhost` was rejected (macOS RFC 6761 compliance hardcodes all `*.localhost` to `127.0.0.1`).
 
+### Dynamic reload mechanism
+
+dnsmasq does **not** re-read `conf-dir` entries on SIGHUP — those are startup-only. Only files registered via `addn-hosts` are reloaded on SIGHUP.
+
+The daemon maintains a single `hosts` file at `{dnsmasq.d}/local-auto-domain/hosts` in standard `/etc/hosts` format. `addn-hosts=<path>` in `dnsmasq.conf` registers it. On every domain add/remove, the daemon rewrites this file and signals dnsmasq — new entries are live within 2 seconds, no restart required.
+
+Per-port `port-N.conf` state files also exist in the drop-in dir. They are not read by dnsmasq at runtime but are used by the daemon to rebuild the hosts file after a crash/restart.
+
 ### macOS
 
-- `/etc/resolver/test` contains `nameserver 127.0.0.1`
-- mDNSResponder routes all `*.test` queries to dnsmasq
-- Per-domain conf files: `/opt/homebrew/etc/dnsmasq.d/local-auto-domain/port-{N}.conf`
-- dnsmasq reloaded via `SIGHUP` on each add/remove (no restart)
+- `/etc/resolver/test` contains `nameserver 127.0.0.1` and `port 5300`
+- dnsmasq listens on port 5300 (non-privileged) so it runs as a user-level LaunchAgent
+- `lad setup` uses `launchctl asuser <uid>` to start dnsmasq within the user's GUI session (required for `launchctl bootstrap gui/<uid>` — `sudo -u` does not carry the session token)
+- mDNSResponder routes all `*.test` queries to `127.0.0.1:5300`
+- `pkill -HUP dnsmasq` works without sudo because dnsmasq runs as the current user
 
 ### Linux
 
 - systemd-resolved drop-in: `Domains=~tunnel.test`, `DNS=127.0.0.1`
-- Per-domain conf files: `/etc/dnsmasq.d/local-auto-domain/port-{N}.conf`
+- dnsmasq binds port 53 (requires root); runs as a system service, drops to `nobody`
+- `lad setup` writes `/etc/sudoers.d/local-auto-domain`: `NOPASSWD: /usr/bin/systemctl reload dnsmasq`
+- `systemctl reload dnsmasq` sends SIGHUP via systemd using the tracked PID — correct even after privilege drop to `nobody`
 
-### Note on CLI DNS tools
+### Note on DNS verification tools
 
-`host`, `dig`, `nslookup` query `/etc/resolv.conf` (external resolver) and bypass mDNSResponder. They will return NXDOMAIN for `.test` — this is expected. `curl`, browsers, and most applications use mDNSResponder and resolve correctly.
+`host`, `dig`, `nslookup` query `/etc/resolv.conf` directly and bypass mDNSResponder / systemd-resolved per-domain routing. They return NXDOMAIN for `.test` — expected behaviour. Use `dns-sd -q <name> A` (macOS) or `getent hosts <name>` (Linux) to verify resolution through the same path as `curl` and browsers.
 
 ---
 
@@ -316,8 +327,9 @@ type Entry struct {
 | `lad daemon`             | current user                                             |
 | `lad install-service`    | current user                                             |
 | `lad uninstall`          | sudo (CA removal, loopback aliases on macOS)             |
-| Runtime dnsmasq updates  | current user (dnsmasq.d dir made user-writable by setup) |
-| Loopback aliases (macOS) | created by root LaunchDaemon at boot; no runtime sudo    |
+| Runtime dnsmasq updates (macOS) | current user — dnsmasq runs as user LaunchAgent on port 5300      |
+| Runtime dnsmasq updates (Linux) | `sudo systemctl reload dnsmasq` via NOPASSWD sudoers rule         |
+| Loopback aliases (macOS)        | created by root LaunchDaemon at boot; no runtime sudo             |
 
 ---
 
@@ -326,7 +338,7 @@ type Entry struct {
 |                     | macOS                          | Linux                             |
 | ------------------- | ------------------------------ | --------------------------------- |
 | Socket detection    | `lsof`                         | `ss` + `/proc`                    |
-| DNS resolver config | `/etc/resolver/test`           | systemd-resolved split-DNS        |
+| DNS resolver config | `/etc/resolver/test` (port 5300) | systemd-resolved split-DNS      |
 | Loopback aliases    | `ifconfig lo0 alias` via setup | not needed (127.0.0.0/8 routable) |
 | Service manager     | launchd (LaunchAgents)         | systemd --user                    |
 | CA trust store      | system keychain (`security`)   | `update-ca-certificates`          |
@@ -371,7 +383,8 @@ Resource name extracted by stripping `svc/`, `pod/`, `deploy/`, `deployment/`, `
 | `…/daemon.sock`                                                   | Unix socket for IPC               |
 | `…/ca.crt` / `ca.key`                                             | Local CA cert + key (`0600`)      |
 | `…/wildcard.crt` / `wildcard.key`                                 | Wildcard leaf cert + key (`0600`) |
-| `/etc/dnsmasq.d/local-auto-domain/`                               | Per-domain dnsmasq conf files     |
+| `/etc/dnsmasq.d/local-auto-domain/hosts`                          | addn-hosts file — re-read by dnsmasq on SIGHUP |
+| `/etc/dnsmasq.d/local-auto-domain/port-N.conf`                    | Per-port state files (daemon restart recovery)  |
 | `/etc/resolver/test`                                              | macOS resolver routing            |
 | `~/.config/local-auto-domain/config.yaml`                         | User configuration                |
 | `~/Library/LaunchAgents/com.pras-labs.local-auto-domain.plist`    | macOS login service               |
@@ -394,4 +407,5 @@ Detailed rationale for key design decisions is in `docs/adr/`:
 | [006](adr/006-macos-loopback-alias-strategy.md)    | macOS loopback alias creation strategy                |
 | [007](adr/007-tls-termination-local-ca.md)         | TLS termination with local CA + wildcard cert         |
 | [008](adr/008-identifier-service-domain-naming.md) | `{identifier}-{service}.tld` naming scheme            |
-| [009](adr/009-tld-change-to-tunnel-test.md)        | TLD change from `.tunnel.localhost` to `.tunnel.test` |
+| [009](adr/009-tld-change-to-tunnel-test.md)        | TLD change from `.tunnel.localhost` to `.tunnel.test`                                     |
+| [010](adr/010-dnsmasq-addn-hosts-reload.md)        | dnsmasq dynamic reload via addn-hosts; macOS port 5300 + user LaunchAgent; Linux sudoers |
