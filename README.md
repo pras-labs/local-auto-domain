@@ -264,3 +264,99 @@ local-auto-domain/
 | Loopback aliases    | `ifconfig lo0 alias` (setup)     | not needed (127.0.0.0/8 routable) |
 | Service manager     | launchd                          | systemd --user                    |
 | CA trust store      | system keychain (`security`)     | `update-ca-certificates`          |
+
+### Linux distros without systemd-resolved
+
+`lad setup` configures split-DNS via systemd-resolved. On distros that don't use it (Alpine, minimal Debian/Ubuntu, some container images), the split-DNS step is silently skipped and `*.tunnel.test` queries won't reach dnsmasq.
+
+Check whether systemd-resolved is active:
+
+```bash
+systemctl is-active systemd-resolved
+```
+
+If the unit is inactive, enable it:
+
+```bash
+sudo systemctl enable --now systemd-resolved
+sudo ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+```
+
+Then re-run `lad setup`.
+
+If the unit file does not exist (e.g. Debian Bookworm minimal/server install), install it first:
+
+```bash
+sudo apt install systemd-resolved
+sudo systemctl enable --now systemd-resolved
+sudo ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+```
+
+Then re-run `lad setup`. If you'd rather not install systemd-resolved, choose one of the manual approaches below.
+
+#### Option A: dnsmasq handles all DNS (simple, intrusive)
+
+Tell the system to use dnsmasq as its only resolver. Requires editing `/etc/resolv.conf` or your distro's network config.
+
+```bash
+# Make dnsmasq listen on localhost (already true after lad setup)
+# Point the system resolver at it
+echo "nameserver 127.0.0.1" | sudo tee /etc/resolv.conf
+```
+
+On systems managed by NetworkManager, prevent it from overwriting `resolv.conf`:
+
+```bash
+# /etc/NetworkManager/NetworkManager.conf
+[main]
+dns=none
+```
+
+**Trade-off**: all DNS queries go through dnsmasq. If dnsmasq is down, DNS stops. Upstream forwarding must be configured in `/etc/dnsmasq.conf`:
+
+```
+# Forward everything except tunnel.test to your upstream resolver
+server=8.8.8.8
+server=8.8.4.4
+```
+
+#### Option B: dnsmasq answers only `.tunnel.test` (surgical, no system-wide change)
+
+Add a routing-only entry to dnsmasq and point only `.tunnel.test` lookups at it. Works with any resolver that supports per-domain forwarding.
+
+**With NetworkManager + dnsmasq plugin:**
+
+```bash
+# /etc/NetworkManager/dnsmasq.d/tunnel-test.conf
+server=/tunnel.test/127.0.0.1
+```
+
+```bash
+sudo systemctl restart NetworkManager
+```
+
+**With resolvconf / openresolv:**
+
+```bash
+# /etc/resolvconf/resolv.conf.d/head
+nameserver 127.0.0.1
+```
+
+Then add to `/etc/dnsmasq.conf`:
+
+```
+server=/tunnel.test/127.0.0.1
+```
+
+```bash
+sudo systemctl restart dnsmasq
+```
+
+**Verify either option with:**
+
+```bash
+# Should return 127.0.1.X (not NXDOMAIN)
+getent hosts any-name.tunnel.test
+```
+
+> **Note**: `host`, `dig`, and `nslookup` query `/etc/resolv.conf` directly and bypass per-domain routing. Use `getent hosts` or `curl` to verify — these go through the full resolver stack.
