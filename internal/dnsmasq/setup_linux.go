@@ -35,6 +35,18 @@ func Setup() error {
 	// 3. Ensure main dnsmasq.conf includes our drop-in dir and addn-hosts file.
 	// addn-hosts is the key directive: dnsmasq re-reads it on SIGHUP, making
 	// domain updates take effect without restarting dnsmasq.
+	//
+	// listen-address + bind-interfaces together prevent dnsmasq from claiming
+	// 127.0.0.53:53, which systemd-resolved's stub listener already owns.
+	// listen-address alone is insufficient: without bind-interfaces dnsmasq
+	// still opens a wildcard socket and filters by address, which can still
+	// conflict. bind-interfaces forces it to bind only the listed address.
+	if err := ensureConf("listen-address=127.0.0.1"); err != nil {
+		return err
+	}
+	if err := ensureConf("bind-interfaces"); err != nil {
+		return err
+	}
 	confLine := fmt.Sprintf("conf-dir=%s,*.conf", linuxDropInDir)
 	if err := ensureConf(confLine); err != nil {
 		return err
@@ -82,10 +94,12 @@ func Teardown() error {
 	// Remove drop-in dir (was created with sudo, needs sudo to remove)
 	exec.Command("sudo", "rm", "-rf", linuxDropInDir).Run()
 
-	// Remove conf-dir and addn-hosts lines from /etc/dnsmasq.conf
+	// Remove conf-dir, addn-hosts, and listen-address lines from /etc/dnsmasq.conf
 	confLine := fmt.Sprintf("conf-dir=%s,*.conf", linuxDropInDir)
 	removeLineFromFileWithSudo("/etc/dnsmasq.conf", confLine)
 	removeLineFromFileWithSudo("/etc/dnsmasq.conf", fmt.Sprintf("addn-hosts=%s/hosts", linuxDropInDir))
+	removeLineFromFileWithSudo("/etc/dnsmasq.conf", "listen-address=127.0.0.1")
+	removeLineFromFileWithSudo("/etc/dnsmasq.conf", "bind-interfaces")
 
 	// Remove sudoers rule
 	exec.Command("sudo", "rm", "-f", sudoersPath).Run()
