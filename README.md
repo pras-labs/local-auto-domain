@@ -2,6 +2,30 @@
 
 Automatically generates resolvable `.tunnel.test` domain names for `ssh -L` and `kubectl port-forward` connections. Each forwarded port gets a unique domain and a TCP proxy bound to a dedicated loopback IP, so multiple forwards to the same service port are independently addressable by domain name. HTTPS services get a trusted wildcard TLS certificate — no browser warnings.
 
+## Table of contents
+
+- [How it works](#how-it-works)
+- [Installation](#installation)
+  - [Prerequisites](#prerequisites)
+  - [Build from source](#build-from-source)
+  - [One-time setup](#one-time-setup-requires-sudo)
+- [Usage](#usage)
+  - [Start the daemon](#start-the-daemon)
+  - [Install as a system service](#install-as-a-system-service-auto-start-on-login)
+  - [List active mappings](#list-active-mappings)
+  - [Override a domain identifier](#override-a-domain-identifier)
+  - [Status](#status)
+  - [Full uninstall](#full-uninstall)
+- [HTTPS support](#https-support)
+- [Domain naming](#domain-naming)
+- [SSH flag support](#ssh-flag-support)
+- [kubectl support](#kubectl-support)
+- [Configuration](#configuration)
+- [Architecture](#architecture)
+- [Privilege model](#privilege-model)
+- [Platforms](#platforms)
+  - [Linux distros without systemd-resolved](#linux-distros-without-systemd-resolved)
+
 ## How it works
 
 The daemon polls every 2 seconds for new port-forward processes. When one is detected:
