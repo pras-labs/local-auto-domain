@@ -151,9 +151,12 @@ func ensureConf(line string) error {
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	if strings.Contains(string(data), line) {
-		return nil
+	for _, l := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(l) == strings.TrimSpace(line) {
+			return nil
+		}
 	}
+
 	cmd := exec.Command("sudo", "tee", "-a", path)
 	cmd.Stdin = strings.NewReader("\n" + line + "\n")
 	if out, err := cmd.CombinedOutput(); err != nil {
