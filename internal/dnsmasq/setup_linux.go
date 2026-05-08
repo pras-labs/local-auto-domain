@@ -85,14 +85,7 @@ func Setup() error {
 // sudoers rule, and the conf-dir line from /etc/dnsmasq.conf.
 // Requires sudo for system files.
 func Teardown() error {
-	// Remove per-link DNS routing service + clear lo DNS config
-	exec.Command("sudo", "systemctl", "disable", "--now", "local-auto-domain-dns.service").Run()
-	exec.Command("sudo", "rm", "-f", resolvectlServicePath).Run()
-	exec.Command("sudo", "systemctl", "daemon-reload").Run()
-	exec.Command("resolvectl", "revert", "lo").Run()
-
-	// Remove legacy resolved drop-in if present from a previous setup version
-	exec.Command("sudo", "rm", "-f", "/etc/systemd/resolved.conf.d/local-auto-domain.conf").Run()
+	teardownSplitDNS()
 
 	// Remove drop-in dir (was created with sudo, needs sudo to remove)
 	exec.Command("sudo", "rm", "-rf", linuxDropInDir).Run()
@@ -199,7 +192,7 @@ func writeSudoers() error {
 	return nil
 }
 
-const resolvectlServicePath = "/etc/systemd/system/local-auto-domain-dns.service"
+const networkdLoConfig = "/etc/systemd/network/10-local-auto-domain-lo.network"
 
 // configureSplitDNS routes .tunnel.test queries to dnsmasq on 127.0.0.1.
 //
@@ -209,36 +202,155 @@ const resolvectlServicePath = "/etc/systemd/system/local-auto-domain-dns.service
 // 127.0.0.1 specifically. NXDOMAIN from 1.1.1.1 is accepted; 127.0.0.1 is
 // never tried.
 //
-// Fix: configure 127.0.0.1 + ~tunnel.test on the loopback interface (lo) as
-// a per-link scope. Per-link scopes are isolated — 127.0.0.1 is the only
-// server for tunnel.test queries and public DNS is unaffected.
-//
-// resolvectl changes are ephemeral; a systemd oneshot service re-applies them
-// on every boot.
+// The fix requires an isolated per-link DNS scope on lo. How to achieve that
+// depends on which network manager is active:
+//   - systemd-networkd: write a .network file for lo; networkd registers the
+//     per-link scope with resolved automatically at startup.
+//   - NetworkManager: configure the loopback connection via nmcli; NM pushes
+//     the per-link DNS to resolved when the connection comes up.
+//   - dhcpcd / connman / ifupdown / unknown: no per-domain routing support;
+//     write the .network file (inert) and print distro-specific guidance.
 func configureSplitDNS() {
-	// Apply immediately for the current session.
-	exec.Command("resolvectl", "dns", "lo", "127.0.0.1").Run()
-	exec.Command("resolvectl", "domain", "lo", "~tunnel.test").Run()
-
-	// Install a oneshot service so the per-link config survives reboots.
-	const content = `[Unit]
-Description=local-auto-domain DNS routing for .tunnel.test
-After=systemd-resolved.service
-Wants=systemd-resolved.service
-
-[Service]
-Type=oneshot
-ExecStart=/usr/bin/resolvectl dns lo 127.0.0.1
-ExecStart=/usr/bin/resolvectl domain lo ~tunnel.test
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-`
-	cmd := exec.Command("sudo", "tee", resolvectlServicePath)
-	cmd.Stdin = strings.NewReader(content)
-	if err := cmd.Run(); err == nil {
-		exec.Command("sudo", "systemctl", "daemon-reload").Run()
-		exec.Command("sudo", "systemctl", "enable", "--now", "local-auto-domain-dns.service").Run()
+	switch {
+	case isServiceActive("systemd-networkd"):
+		configureSplitDNSNetworkd()
+	case isServiceActive("NetworkManager"):
+		configureSplitDNSNM()
+	default:
+		writeNetworkdLoConfig() //nolint:errcheck
+		printSplitDNSFallbackHint()
 	}
+}
+
+// printSplitDNSFallbackHint detects the active network manager and prints
+// targeted guidance for configuring .tunnel.test DNS routing manually.
+// None of these systems support per-domain routing natively, so the message
+// tells the user what their stack is and what to do.
+func printSplitDNSFallbackHint() {
+	switch {
+	case isServiceActive("dhcpcd"):
+		fmt.Println("Detected: dhcpcd (no native per-domain DNS routing).")
+		fmt.Println("To route .tunnel.test queries to dnsmasq, add to /etc/dhcpcd.conf:")
+		fmt.Println("  nohook resolv.conf")
+		fmt.Println("Then manage /etc/resolv.conf manually or enable systemd-networkd.")
+
+	case isServiceActive("connman"):
+		fmt.Println("Detected: connman (no native per-domain DNS routing).")
+		fmt.Println("ConnMan proxies all DNS — it does not support routing by domain.")
+		fmt.Println("Options: enable systemd-networkd for lo, or disable ConnMan's DNS")
+		fmt.Println("proxy (dns=off in main.conf) and point /etc/resolv.conf at dnsmasq.")
+
+	case commandExists("ifup"):
+		fmt.Println("Detected: ifupdown (DNS managed via /etc/resolv.conf or resolvconf).")
+		if commandExists("resolvconf") {
+			fmt.Println("resolvconf found. Add to /etc/resolvconf/resolv.conf.d/head:")
+			fmt.Println("  nameserver 127.0.0.1")
+			fmt.Println("Then run: sudo resolvconf -u")
+			fmt.Println("Note: this prepends dnsmasq to the resolver list, not true split-DNS.")
+		} else {
+			fmt.Println("Add 'nameserver 127.0.0.1' as the first line of /etc/resolv.conf.")
+			fmt.Println("Note: this routes ALL DNS through dnsmasq (not just .tunnel.test).")
+			fmt.Println("Configure dnsmasq upstream forwarding in /etc/dnsmasq.conf:")
+			fmt.Println("  server=8.8.8.8")
+		}
+
+	default:
+		fmt.Println("Note: no recognised network manager detected.")
+		fmt.Println(".tunnel.test DNS routing config written to:")
+		fmt.Printf("  %s\n", networkdLoConfig)
+		fmt.Println("Start systemd-networkd to activate it, or configure DNS routing manually.")
+	}
+}
+
+func commandExists(name string) bool {
+	_, err := exec.LookPath(name)
+	return err == nil
+}
+
+func isServiceActive(name string) bool {
+	out, _ := exec.Command("systemctl", "is-active", name).Output()
+	return strings.TrimSpace(string(out)) == "active"
+}
+
+// configureSplitDNSNetworkd writes a .network file for lo and reloads networkd.
+func configureSplitDNSNetworkd() {
+	if err := writeNetworkdLoConfig(); err != nil {
+		fmt.Printf("Warning: could not write networkd lo config: %v\n", err)
+		return
+	}
+	exec.Command("sudo", "networkctl", "reload").Run()
+}
+
+func writeNetworkdLoConfig() error {
+	const content = "[Match]\nName=lo\n\n[Network]\nDNS=127.0.0.1\nDomains=~tunnel.test\n"
+	exec.Command("sudo", "mkdir", "-p", "/etc/systemd/network").Run()
+	cmd := exec.Command("sudo", "tee", networkdLoConfig)
+	cmd.Stdin = strings.NewReader(content)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("%w\n%s", err, out)
+	}
+	return nil
+}
+
+// configureSplitDNSNM configures the loopback connection in NetworkManager so
+// NM pushes 127.0.0.1 + ~tunnel.test to systemd-resolved as a per-link scope.
+// NM is assumed to use dns=systemd-resolved (the default on modern distros).
+func configureSplitDNSNM() {
+	// Find the active connection on the lo interface.
+	out, err := exec.Command("nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active").Output()
+	if err != nil {
+		fmt.Printf("Warning: nmcli failed: %v\n", err)
+		return
+	}
+	var connName string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) == 2 && strings.TrimSpace(parts[1]) == "lo" {
+			connName = strings.TrimSpace(parts[0])
+			break
+		}
+	}
+	if connName == "" {
+		fmt.Println("Warning: no active NetworkManager connection found on lo.")
+		fmt.Println("Falling back to networkd config (inert until networkd is started).")
+		writeNetworkdLoConfig() //nolint:errcheck
+		return
+	}
+
+	exec.Command("nmcli", "connection", "modify", connName,
+		"ipv4.dns", "127.0.0.1",
+		"ipv4.dns-search", "~tunnel.test").Run()
+	exec.Command("nmcli", "connection", "up", connName).Run()
+}
+
+// teardownSplitDNS reverses configureSplitDNS for whichever method was used.
+func teardownSplitDNS() {
+	// networkd path
+	exec.Command("sudo", "rm", "-f", networkdLoConfig).Run()
+	if isServiceActive("systemd-networkd") {
+		exec.Command("sudo", "networkctl", "reload").Run()
+	}
+
+	// NM path — clear DNS from loopback connection if NM is active
+	if isServiceActive("NetworkManager") {
+		out, err := exec.Command("nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active").Output()
+		if err == nil {
+			for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+				parts := strings.SplitN(line, ":", 2)
+				if len(parts) == 2 && strings.TrimSpace(parts[1]) == "lo" {
+					connName := strings.TrimSpace(parts[0])
+					exec.Command("nmcli", "connection", "modify", connName,
+						"ipv4.dns", "",
+						"ipv4.dns-search", "").Run()
+					exec.Command("nmcli", "connection", "up", connName).Run()
+					break
+				}
+			}
+		}
+	}
+
+	// Legacy artifacts
+	exec.Command("sudo", "rm", "-f", "/etc/systemd/system/local-auto-domain-dns.service").Run()
+	exec.Command("sudo", "systemctl", "daemon-reload").Run()
+	exec.Command("sudo", "rm", "-f", "/etc/systemd/resolved.conf.d/local-auto-domain.conf").Run()
 }
