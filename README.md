@@ -24,7 +24,7 @@ Automatically generates resolvable `.tunnel.test` domain names for `ssh -L` and 
 - [Architecture](#architecture)
 - [Privilege model](#privilege-model)
 - [Platforms](#platforms)
-  - [Linux distros without systemd-resolved](#linux-distros-without-systemd-resolved)
+  - [Linux distros without systemd-resolved or systemd-networkd](#linux-distros-without-systemd-resolved-or-systemd-networkd)
 
 ## How it works
 
@@ -262,7 +262,9 @@ local-auto-domain/
 
 **IPC**: Daemon exposes `GET /state` over a Unix socket at `~/.local/share/local-auto-domain/daemon.sock`. CLI commands talk to it directly.
 
-**DNS**: The daemon maintains a single `hosts` file at `{dnsmasq.d}/local-auto-domain/hosts` registered with dnsmasq via `addn-hosts`. dnsmasq re-reads `addn-hosts` files on `SIGHUP` — no restart needed. (`conf-dir` entries are startup-only and are not re-read on SIGHUP; per-port `port-N.conf` state files exist solely for daemon-restart recovery.) On macOS, dnsmasq runs on port 5300 as a user-level LaunchAgent so the daemon can send SIGHUP without sudo. On Linux, a NOPASSWD sudoers rule written by `lad setup` allows `sudo systemctl reload dnsmasq` without a prompt.
+**DNS**: The daemon maintains a single `hosts` file at `{dnsmasq.d}/local-auto-domain/hosts` registered with dnsmasq via `addn-hosts`. dnsmasq re-reads `addn-hosts` files on `SIGHUP` — no restart needed. (`conf-dir` entries are startup-only and are not re-read on SIGHUP; per-port `port-N.conf` state files exist solely for daemon-restart recovery.) On macOS, dnsmasq runs on port 5300 as a user-level LaunchAgent so the daemon can send SIGHUP without sudo. On Linux, a NOPASSWD sudoers rule written by `lad setup` allows `sudo systemctl reload dnsmasq` without a prompt. dnsmasq is pinned to `listen-address=127.0.0.1` + `bind-interfaces` to avoid conflicting with systemd-resolved's stub listener on `127.0.0.53:53`.
+
+**Linux DNS routing**: `lad setup` creates a `lad-dns` dummy network interface via systemd-networkd with `DNS=127.0.0.1` and `Domains=~tunnel.test`. This gives systemd-resolved an isolated per-link DNS scope — `tunnel.test` queries go exclusively to dnsmasq; DHCP-provided public DNS servers are unaffected. The global resolved drop-in approach (`DNS=` in `resolved.conf.d`) does not work because DHCP servers are pooled in the same scope and the "current" server (e.g. `1.1.1.1`) wins. `lad setup` detects the active network manager (systemd-networkd, NetworkManager, dhcpcd, connman, ifupdown) and configures or guides accordingly.
 
 **Routing**: Unique loopback IPs (`127.0.1.X`) mean multiple domains can share the same proxy port (e.g., two HTTP services both accessible on `:8080` via different IPs). Works for any TCP protocol — HTTP, PostgreSQL, Redis, etc.
 
@@ -285,14 +287,14 @@ local-auto-domain/
 |                     | macOS                            | Linux                             |
 | ------------------- | -------------------------------- | --------------------------------- |
 | Socket detection    | `lsof`                           | `ss` + `/proc`                    |
-| DNS resolver config | `/etc/resolver/test` (port 5300) | systemd-resolved split-DNS    |
+| DNS resolver config | `/etc/resolver/test` (port 5300) | `lad-dns` dummy interface (networkd + resolved per-link scope) |
 | Loopback aliases    | `ifconfig lo0 alias` (setup)     | not needed (127.0.0.0/8 routable) |
 | Service manager     | launchd                          | systemd --user                    |
 | CA trust store      | system keychain (`security`)     | `update-ca-certificates`          |
 
-### Linux distros without systemd-resolved
+### Linux distros without systemd-resolved or systemd-networkd
 
-`lad setup` configures split-DNS via systemd-resolved. On distros that don't use it (Alpine, minimal Debian/Ubuntu, some container images), the split-DNS step is silently skipped and `*.tunnel.test` queries won't reach dnsmasq.
+`lad setup` configures split-DNS via a `lad-dns` dummy interface managed by systemd-networkd, with systemd-resolved providing per-domain query routing. Both must be active. On distros that don't use them (Alpine, minimal Debian/Ubuntu, some container images), the split-DNS step is skipped and `*.tunnel.test` queries won't reach dnsmasq.
 
 Check whether systemd-resolved is active:
 

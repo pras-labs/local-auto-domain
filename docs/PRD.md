@@ -231,10 +231,23 @@ Per-port `port-N.conf` state files also exist in the drop-in dir. They are not r
 
 ### Linux
 
-- systemd-resolved drop-in: `Domains=~tunnel.test`, `DNS=127.0.0.1`
 - dnsmasq binds port 53 (requires root); runs as a system service, drops to `nobody`
 - `lad setup` writes `/etc/sudoers.d/local-auto-domain`: `NOPASSWD: /usr/bin/systemctl reload dnsmasq`
 - `systemctl reload dnsmasq` sends SIGHUP via systemd using the tracked PID — correct even after privilege drop to `nobody`
+- dnsmasq is pinned to `127.0.0.1` via `listen-address=127.0.0.1` + `bind-interfaces` to prevent conflict with systemd-resolved's stub listener on `127.0.0.53:53`
+
+**Split-DNS routing**: `lad setup` creates a `lad-dns` dummy network interface managed by systemd-networkd, configured with `DNS=127.0.0.1` and `Domains=~tunnel.test`. This gives systemd-resolved an isolated per-link DNS scope for `tunnel.test` queries. The global DNS scope (with DHCP-provided servers like `1.1.1.1`) is unaffected.
+
+The dummy interface requires a globally-scoped non-link-local address (`192.0.2.1/32 Scope=global`, RFC 5737 TEST-NET-1) for systemd-resolved to activate a DNS scope on it. See [ADR-011](adr/011-linux-split-dns-lad-dns-dummy-interface.md) for the full investigation.
+
+`configureSplitDNS()` detects the active network manager and acts accordingly:
+
+| Detected            | Action                                                                   |
+| ------------------- | ------------------------------------------------------------------------ |
+| systemd-networkd    | Write `.netdev` + `.network`; `networkctl reload`                        |
+| NetworkManager      | Write files; enable networkd if no conflicting configs exist             |
+| dhcpcd / connman / ifupdown | Write files (inert); print targeted manual guidance            |
+| none                | Write files (inert); print generic message                               |
 
 ### Note on DNS verification tools
 
@@ -338,7 +351,7 @@ type Entry struct {
 |                     | macOS                          | Linux                             |
 | ------------------- | ------------------------------ | --------------------------------- |
 | Socket detection    | `lsof`                         | `ss` + `/proc`                    |
-| DNS resolver config | `/etc/resolver/test` (port 5300) | systemd-resolved split-DNS      |
+| DNS resolver config | `/etc/resolver/test` (port 5300) | `lad-dns` dummy interface (systemd-networkd + resolved per-link scope) |
 | Loopback aliases    | `ifconfig lo0 alias` via setup | not needed (127.0.0.0/8 routable) |
 | Service manager     | launchd (LaunchAgents)         | systemd --user                    |
 | CA trust store      | system keychain (`security`)   | `update-ca-certificates`          |
@@ -386,6 +399,8 @@ Resource name extracted by stripping `svc/`, `pod/`, `deploy/`, `deployment/`, `
 | `/etc/dnsmasq.d/local-auto-domain/hosts`                          | addn-hosts file — re-read by dnsmasq on SIGHUP |
 | `/etc/dnsmasq.d/local-auto-domain/port-N.conf`                    | Per-port state files (daemon restart recovery)  |
 | `/etc/resolver/test`                                              | macOS resolver routing            |
+| `/etc/systemd/network/10-local-auto-domain-dns.netdev`            | Linux: lad-dns dummy interface definition |
+| `/etc/systemd/network/10-local-auto-domain-dns.network`           | Linux: lad-dns DNS routing config (DNS=127.0.0.1, ~tunnel.test) |
 | `~/.config/local-auto-domain/config.yaml`                         | User configuration                |
 | `~/Library/LaunchAgents/com.pras-labs.local-auto-domain.plist`    | macOS login service               |
 | `~/.config/systemd/user/local-auto-domain.service`                | Linux login service               |
@@ -409,3 +424,4 @@ Detailed rationale for key design decisions is in `docs/adr/`:
 | [008](adr/008-identifier-service-domain-naming.md) | `{identifier}-{service}.tld` naming scheme            |
 | [009](adr/009-tld-change-to-tunnel-test.md)        | TLD change from `.tunnel.localhost` to `.tunnel.test`                                     |
 | [010](adr/010-dnsmasq-addn-hosts-reload.md)        | dnsmasq dynamic reload via addn-hosts; macOS port 5300 + user LaunchAgent; Linux sudoers |
+| [011](adr/011-linux-split-dns-lad-dns-dummy-interface.md) | Linux split-DNS via lad-dns dummy interface; six-attempt investigation into systemd-resolved DNS scope activation |
