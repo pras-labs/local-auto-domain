@@ -81,15 +81,18 @@ func Setup() error {
 	return nil
 }
 
-// Teardown reverses Setup: removes systemd-resolved config, drop-in dir,
+// Teardown reverses Setup: removes DNS routing service, drop-in dir,
 // sudoers rule, and the conf-dir line from /etc/dnsmasq.conf.
 // Requires sudo for system files.
 func Teardown() error {
-	const resolvedDropIn = "/etc/systemd/resolved.conf.d/local-auto-domain.conf"
+	// Remove per-link DNS routing service + clear lo DNS config
+	exec.Command("sudo", "systemctl", "disable", "--now", "local-auto-domain-dns.service").Run()
+	exec.Command("sudo", "rm", "-f", resolvectlServicePath).Run()
+	exec.Command("sudo", "systemctl", "daemon-reload").Run()
+	exec.Command("resolvectl", "revert", "lo").Run()
 
-	// Remove systemd-resolved drop-in + restart
-	exec.Command("sudo", "rm", "-f", resolvedDropIn).Run()
-	exec.Command("sudo", "systemctl", "restart", "systemd-resolved").Run()
+	// Remove legacy resolved drop-in if present from a previous setup version
+	exec.Command("sudo", "rm", "-f", "/etc/systemd/resolved.conf.d/local-auto-domain.conf").Run()
 
 	// Remove drop-in dir (was created with sudo, needs sudo to remove)
 	exec.Command("sudo", "rm", "-rf", linuxDropInDir).Run()
@@ -196,15 +199,46 @@ func writeSudoers() error {
 	return nil
 }
 
-// configureSplitDNS sets up systemd-resolved to forward .tunnel.test queries to 127.0.0.1.
-func configureSplitDNS() {
-	const resolvedDropIn = "/etc/systemd/resolved.conf.d/local-auto-domain.conf"
-	const content = "[Resolve]\nDNS=127.0.0.1\nDomains=~tunnel.test\n"
+const resolvectlServicePath = "/etc/systemd/system/local-auto-domain-dns.service"
 
-	exec.Command("sudo", "mkdir", "-p", "/etc/systemd/resolved.conf.d").Run()
-	cmd := exec.Command("sudo", "tee", resolvedDropIn)
+// configureSplitDNS routes .tunnel.test queries to dnsmasq on 127.0.0.1.
+//
+// Adding 127.0.0.1 to the global resolved scope (DNS= in resolved.conf.d)
+// does not work: the global scope may have other DNS servers (e.g. 1.1.1.1
+// from DHCP), and resolved uses whichever is "current" for the scope — not
+// 127.0.0.1 specifically. NXDOMAIN from 1.1.1.1 is accepted; 127.0.0.1 is
+// never tried.
+//
+// Fix: configure 127.0.0.1 + ~tunnel.test on the loopback interface (lo) as
+// a per-link scope. Per-link scopes are isolated — 127.0.0.1 is the only
+// server for tunnel.test queries and public DNS is unaffected.
+//
+// resolvectl changes are ephemeral; a systemd oneshot service re-applies them
+// on every boot.
+func configureSplitDNS() {
+	// Apply immediately for the current session.
+	exec.Command("resolvectl", "dns", "lo", "127.0.0.1").Run()
+	exec.Command("resolvectl", "domain", "lo", "~tunnel.test").Run()
+
+	// Install a oneshot service so the per-link config survives reboots.
+	const content = `[Unit]
+Description=local-auto-domain DNS routing for .tunnel.test
+After=systemd-resolved.service
+Wants=systemd-resolved.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/resolvectl dns lo 127.0.0.1
+ExecStart=/usr/bin/resolvectl domain lo ~tunnel.test
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+`
+	cmd := exec.Command("sudo", "tee", resolvectlServicePath)
 	cmd.Stdin = strings.NewReader(content)
 	if err := cmd.Run(); err == nil {
-		exec.Command("sudo", "systemctl", "restart", "systemd-resolved").Run()
+		exec.Command("sudo", "systemctl", "daemon-reload").Run()
+		exec.Command("sudo", "systemctl", "enable", "--now", "local-auto-domain-dns.service").Run()
 	}
 }
