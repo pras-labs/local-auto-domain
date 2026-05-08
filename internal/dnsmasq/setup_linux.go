@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -192,7 +193,18 @@ func writeSudoers() error {
 	return nil
 }
 
-const networkdLoConfig = "/etc/systemd/network/10-local-auto-domain-lo.network"
+// networkdNetdev and networkdNetwork are the two files that create and
+// configure a dummy interface used exclusively for DNS routing. A dummy
+// interface is required because systemd-resolved does not activate a DNS
+// scope on loopback interfaces (IFF_LOOPBACK) — Current Scopes: none even
+// when DNS= and Domains= are correctly configured. A dummy interface has no
+// loopback flag, so resolved activates a real DNS scope on it.
+const (
+	networkdNetdev  = "/etc/systemd/network/10-local-auto-domain-dns.netdev"
+	networkdNetwork = "/etc/systemd/network/10-local-auto-domain-dns.network"
+	// keep old lo config name for teardown cleanup of previous installs
+	networkdLoConfig = "/etc/systemd/network/10-local-auto-domain-lo.network"
+)
 
 // configureSplitDNS routes .tunnel.test queries to dnsmasq on 127.0.0.1.
 //
@@ -202,14 +214,11 @@ const networkdLoConfig = "/etc/systemd/network/10-local-auto-domain-lo.network"
 // 127.0.0.1 specifically. NXDOMAIN from 1.1.1.1 is accepted; 127.0.0.1 is
 // never tried.
 //
-// The fix requires an isolated per-link DNS scope on lo. How to achieve that
-// depends on which network manager is active:
-//   - systemd-networkd: write a .network file for lo; networkd registers the
-//     per-link scope with resolved automatically at startup.
-//   - NetworkManager: configure the loopback connection via nmcli; NM pushes
-//     the per-link DNS to resolved when the connection comes up.
-//   - dhcpcd / connman / ifupdown / unknown: no per-domain routing support;
-//     write the .network file (inert) and print distro-specific guidance.
+// The fix: create a dummy network interface (lad-dns) managed by networkd.
+// Dummy interfaces are not loopback, so resolved activates a DNS scope on
+// them. The scope has 127.0.0.1 as its only server + ~tunnel.test as a
+// routing domain — tunnel.test queries go to dnsmasq, everything else is
+// unaffected.
 func configureSplitDNS() {
 	switch {
 	case isServiceActive("systemd-networkd"):
@@ -217,7 +226,7 @@ func configureSplitDNS() {
 	case isServiceActive("NetworkManager"):
 		configureSplitDNSNM()
 	default:
-		writeNetworkdLoConfig() //nolint:errcheck
+		writeNetworkdDNSConfig() //nolint:errcheck
 		printSplitDNSFallbackHint()
 	}
 }
@@ -257,7 +266,8 @@ func printSplitDNSFallbackHint() {
 	default:
 		fmt.Println("Note: no recognised network manager detected.")
 		fmt.Println(".tunnel.test DNS routing config written to:")
-		fmt.Printf("  %s\n", networkdLoConfig)
+		fmt.Printf("  %s\n", networkdNetdev)
+		fmt.Printf("  %s\n", networkdNetwork)
 		fmt.Println("Start systemd-networkd to activate it, or configure DNS routing manually.")
 	}
 }
@@ -272,80 +282,120 @@ func isServiceActive(name string) bool {
 	return strings.TrimSpace(string(out)) == "active"
 }
 
-// configureSplitDNSNetworkd writes a .network file for lo and reloads networkd.
+// configureSplitDNSNetworkd creates a dummy interface for DNS routing and
+// reloads networkd to apply it immediately.
 func configureSplitDNSNetworkd() {
-	if err := writeNetworkdLoConfig(); err != nil {
-		fmt.Printf("Warning: could not write networkd lo config: %v\n", err)
+	if err := writeNetworkdDNSConfig(); err != nil {
+		fmt.Printf("Warning: could not write networkd DNS config: %v\n", err)
 		return
 	}
 	exec.Command("sudo", "networkctl", "reload").Run()
 }
 
-func writeNetworkdLoConfig() error {
-	const content = "[Match]\nName=lo\n\n[Network]\nDNS=127.0.0.1\nDomains=~tunnel.test\n"
+// writeNetworkdDNSConfig writes the .netdev and .network files that create
+// and configure the lad-dns dummy interface.
+func writeNetworkdDNSConfig() error {
+	const netdev = "[NetDev]\nName=lad-dns\nKind=dummy\n"
+	// resolved's link_relevant() requires at least one non-link-local,
+	// non-host-scoped address before activating a DNS scope:
+	//   - link-local (169.254.x.x) are skipped by in_addr_is_link_local()
+	//   - RT_SCOPE_HOST addresses are skipped before the link_relevant() check
+	//
+	// networkd silently assigns RT_SCOPE_HOST to /32 addresses on dummy
+	// interfaces unless Scope=global is stated explicitly. Without it,
+	// resolved sees the address but Current Scopes remains none.
+	//
+	// 192.0.2.1/32 is from RFC 5737 TEST-NET-1 — permanently reserved for
+	// documentation, never publicly routed. The only side effect is a single
+	// kernel host route to 192.0.2.1 on lad-dns, which is harmless.
+	const network = "[Match]\nName=lad-dns\n\n[Network]\nDNS=127.0.0.1\nDomains=~tunnel.test\nLinkLocalAddressing=no\nIPv6AcceptRA=no\n\n[Address]\nAddress=192.0.2.1/32\nScope=global\n"
+
 	exec.Command("sudo", "mkdir", "-p", "/etc/systemd/network").Run()
-	cmd := exec.Command("sudo", "tee", networkdLoConfig)
-	cmd.Stdin = strings.NewReader(content)
+
+	cmd := exec.Command("sudo", "tee", networkdNetdev)
+	cmd.Stdin = strings.NewReader(netdev)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("%w\n%s", err, out)
+		return fmt.Errorf("writing netdev: %w\n%s", err, out)
+	}
+	cmd = exec.Command("sudo", "tee", networkdNetwork)
+	cmd.Stdin = strings.NewReader(network)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("writing network: %w\n%s", err, out)
 	}
 	return nil
 }
 
-// configureSplitDNSNM configures the loopback connection in NetworkManager so
-// NM pushes 127.0.0.1 + ~tunnel.test to systemd-resolved as a per-link scope.
-// NM is assumed to use dns=systemd-resolved (the default on modern distros).
+// configureSplitDNSNM handles NM-managed systems.
+//
+// NM's loopback connection DNS does not create a per-link scope in
+// systemd-resolved — it merges into the global scope alongside DHCP-provided
+// servers (e.g. 1.1.1.1). The global scope's current server wins for all
+// queries including ~tunnel.test, so 127.0.0.1 is never reached.
+//
+// The reliable fix is to enable systemd-networkd for lo only. NM leaves lo
+// unmanaged by default; networkd only claims interfaces with matching .network
+// files, so enabling it is safe as long as no other .network files exist that
+// could match physical interfaces. We check before enabling.
 func configureSplitDNSNM() {
-	// Find the active connection on the lo interface.
-	out, err := exec.Command("nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active").Output()
-	if err != nil {
-		fmt.Printf("Warning: nmcli failed: %v\n", err)
-		return
-	}
-	var connName string
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		parts := strings.SplitN(line, ":", 2)
-		if len(parts) == 2 && strings.TrimSpace(parts[1]) == "lo" {
-			connName = strings.TrimSpace(parts[0])
-			break
-		}
-	}
-	if connName == "" {
-		fmt.Println("Warning: no active NetworkManager connection found on lo.")
-		fmt.Println("Falling back to networkd config (inert until networkd is started).")
-		writeNetworkdLoConfig() //nolint:errcheck
+	if err := writeNetworkdDNSConfig(); err != nil {
+		fmt.Printf("Warning: could not write networkd DNS config: %v\n", err)
 		return
 	}
 
-	exec.Command("nmcli", "connection", "modify", connName,
-		"ipv4.dns", "127.0.0.1",
-		"ipv4.dns-search", "~tunnel.test").Run()
-	exec.Command("nmcli", "connection", "up", connName).Run()
+	if conflict := networkdConflict(); conflict != "" {
+		fmt.Printf("Warning: existing networkd config found (%s).\n", conflict)
+		fmt.Println("Enabling systemd-networkd may affect existing interface management.")
+		fmt.Println(".tunnel.test DNS routing config written but NOT activated.")
+		fmt.Println("To activate manually: sudo systemctl enable --now systemd-networkd")
+		return
+	}
+
+	// Safe to enable: only our lo .network file exists.
+	exec.Command("sudo", "systemctl", "enable", "--now", "systemd-networkd").Run()
+	exec.Command("sudo", "networkctl", "reload").Run()
+}
+
+// networkdConflict returns the first .network/.netdev file found in networkd
+// config dirs that is not our own lo config. A non-empty return means enabling
+// networkd risks claiming interfaces currently managed by another tool.
+func networkdConflict() string {
+	dirs := []string{"/etc/systemd/network", "/usr/lib/systemd/network"}
+	ours := map[string]bool{
+		filepath.Base(networkdNetdev):  true,
+		filepath.Base(networkdNetwork): true,
+		filepath.Base(networkdLoConfig): true, // legacy
+	}
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if ours[e.Name()] {
+				continue
+			}
+			ext := filepath.Ext(e.Name())
+			if ext == ".network" || ext == ".netdev" {
+				return filepath.Join(dir, e.Name())
+			}
+		}
+	}
+	return ""
 }
 
 // teardownSplitDNS reverses configureSplitDNS for whichever method was used.
 func teardownSplitDNS() {
-	// networkd path
+	// Remove current and legacy networkd configs
+	exec.Command("sudo", "rm", "-f", networkdNetdev).Run()
+	exec.Command("sudo", "rm", "-f", networkdNetwork).Run()
 	exec.Command("sudo", "rm", "-f", networkdLoConfig).Run()
+
 	if isServiceActive("systemd-networkd") {
 		exec.Command("sudo", "networkctl", "reload").Run()
-	}
-
-	// NM path — clear DNS from loopback connection if NM is active
-	if isServiceActive("NetworkManager") {
-		out, err := exec.Command("nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show", "--active").Output()
-		if err == nil {
-			for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-				parts := strings.SplitN(line, ":", 2)
-				if len(parts) == 2 && strings.TrimSpace(parts[1]) == "lo" {
-					connName := strings.TrimSpace(parts[0])
-					exec.Command("nmcli", "connection", "modify", connName,
-						"ipv4.dns", "",
-						"ipv4.dns-search", "").Run()
-					exec.Command("nmcli", "connection", "up", connName).Run()
-					break
-				}
-			}
+		// If NM is also active, we enabled networkd during setup — disable it
+		// again so NM resumes sole control of networking.
+		if isServiceActive("NetworkManager") {
+			exec.Command("sudo", "systemctl", "disable", "--now", "systemd-networkd").Run()
 		}
 	}
 
