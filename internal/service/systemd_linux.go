@@ -9,9 +9,15 @@ import (
 
 const unitName = "local-auto-domain.service"
 
-func unitPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "systemd", "user", unitName)
+// unitPath returns the absolute path of the systemd user unit file.
+// It propagates any error from os.UserHomeDir() so callers never
+// receive an empty/relative path silently.
+func unitPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("unitPath: could not determine home directory: %w", err)
+	}
+	return filepath.Join(home, ".config", "systemd", "user", unitName), nil
 }
 
 func Install(binaryPath string) error {
@@ -28,7 +34,10 @@ RestartSec=2
 WantedBy=default.target
 `, binaryPath)
 
-	path := unitPath()
+	path, err := unitPath()
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
@@ -46,7 +55,11 @@ WantedBy=default.target
 
 func Uninstall() error {
 	exec.Command("systemctl", "--user", "disable", "--now", unitName).Run()
-	if err := os.Remove(unitPath()); err != nil && !os.IsNotExist(err) {
+	path, err := unitPath()
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	exec.Command("systemctl", "--user", "daemon-reload").Run()
