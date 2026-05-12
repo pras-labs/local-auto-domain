@@ -2,8 +2,10 @@ package dnsmasq
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -14,12 +16,35 @@ type Manager struct {
 	Dir string
 }
 
+// validHostname matches safe hostname values: starts with a letter or digit,
+// followed by zero or more letters, digits, hyphens, or dots. This rejects
+// any string containing whitespace, control characters, or shell metacharacters.
+var validHostname = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9.\-]*$`)
+
 func New(dir string) *Manager {
 	return &Manager{Dir: dir}
 }
 
 // Add writes the state file for port and updates the addn-hosts file, then reloads dnsmasq.
 func (m *Manager) Add(port int, name, ip string) error {
+	// Trim surrounding whitespace first so that a lone "\n" or " " is caught
+	// by the subsequent validators rather than slipping through.
+	ip = strings.TrimSpace(ip)
+	name = strings.TrimSpace(name)
+
+	// Validate ip: net.ParseIP accepts only well-formed IPv4/IPv6 addresses and
+	// rejects any string containing control characters or extra text.
+	if net.ParseIP(ip) == nil {
+		return fmt.Errorf("dnsmasq manager: invalid IP address %q", ip)
+	}
+
+	// Validate name: only letters, digits, hyphens, and dots are permitted.
+	// This prevents newline/tab/control-character injection and rejects shell
+	// metacharacters that could corrupt the hosts file.
+	if !validHostname.MatchString(name) {
+		return fmt.Errorf("dnsmasq manager: invalid hostname %q (only letters, digits, hyphens, and dots are allowed)", name)
+	}
+
 	if err := os.MkdirAll(m.Dir, 0755); err != nil {
 		return err
 	}
