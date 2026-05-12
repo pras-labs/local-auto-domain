@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -27,14 +28,27 @@ type Entry struct {
 
 // StateStore holds in-memory daemon state.
 type StateStore struct {
+	mu      sync.RWMutex
 	entries map[int]Entry
 }
 
 func NewStateStore() *StateStore { return &StateStore{entries: make(map[int]Entry)} }
 
-func (s *StateStore) Set(e Entry)     { s.entries[e.Port] = e }
-func (s *StateStore) Delete(port int) { delete(s.entries, port) }
+func (s *StateStore) Set(e Entry) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.entries[e.Port] = e
+}
+
+func (s *StateStore) Delete(port int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.entries, port)
+}
+
 func (s *StateStore) All() []Entry {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	out := make([]Entry, 0, len(s.entries))
 	for _, e := range s.entries {
 		out = append(out, e)
