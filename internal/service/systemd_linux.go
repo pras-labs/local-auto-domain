@@ -65,7 +65,9 @@ func Uninstall() error {
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	exec.Command("systemctl", "--user", "daemon-reload").Run()
+	if err := exec.Command("systemctl", "--user", "daemon-reload").Run(); err != nil {
+		return fmt.Errorf("systemctl daemon-reload failed: %w", err)
+	}
 	fmt.Printf("Service removed: %s\n", unitName)
 	return nil
 }
