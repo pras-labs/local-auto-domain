@@ -21,6 +21,9 @@ func unitPath() (string, error) {
 }
 
 func Install(binaryPath string) error {
+	if !filepath.IsAbs(binaryPath) {
+		return fmt.Errorf("binaryPath must be absolute, got: %q", binaryPath)
+	}
 	unit := fmt.Sprintf(`[Unit]
 Description=local-auto-domain daemon
 After=network.target
