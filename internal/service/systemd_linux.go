@@ -48,7 +48,9 @@ WantedBy=default.target
 		return err
 	}
 
-	exec.Command("systemctl", "--user", "daemon-reload").Run()
+	if out, err := exec.Command("systemctl", "--user", "daemon-reload").CombinedOutput(); err != nil {
+		return fmt.Errorf("systemctl daemon-reload failed: %w\n%s", err, out)
+	}
 	if out, err := exec.Command("systemctl", "--user", "enable", "--now", unitName).CombinedOutput(); err != nil {
 		return fmt.Errorf("systemctl enable: %w\n%s", err, out)
 	}

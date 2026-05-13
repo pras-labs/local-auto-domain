@@ -32,7 +32,7 @@ func (c *Client) GetState() ([]Entry, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("daemon returned status %d", resp.StatusCode)
+		return nil, fmt.Errorf("daemon returned status %s", resp.Status)
 	}
 	var entries []Entry
 	return entries, json.NewDecoder(resp.Body).Decode(&entries)
