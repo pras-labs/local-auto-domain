@@ -65,7 +65,9 @@ func (p *Proxy) Stop() {
 	p.stopOnce.Do(func() {
 		close(p.quit)
 		if p.listener != nil {
-			p.listener.Close()
+			if err := p.listener.Close(); err != nil {
+				log.Printf("proxy %s:%d close listener: %v", p.BindIP, p.ListenPort, err)
+			}
 		}
 	})
 	p.wg.Wait()

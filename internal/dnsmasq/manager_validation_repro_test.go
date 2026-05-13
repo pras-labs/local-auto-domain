@@ -1,6 +1,7 @@
 package dnsmasq
 
 import (
+	"strings"
 	"os"
 	"path/filepath"
 	"testing"
@@ -39,9 +40,10 @@ func TestAdd_ReproValidation_BugConfirmed(t *testing.T) {
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.desc, func(t *testing.T) {
-			// Ignore the return value: reload() fails in CI because dnsmasq is
-			// not running, so we cannot use err to detect the bug here.
-			_ = m.Add(tc.port, tc.name, tc.ip)
+			err := m.Add(tc.port, tc.name, tc.ip)
+			if err == nil || !strings.Contains(err.Error(), "invalid") {
+				t.Fatalf("expected invalid-input error, got: %v", err)
+			}
 
 			confFile := filepath.Join(dir, "port-"+itoa(tc.port)+".conf")
 			data, readErr := os.ReadFile(confFile)
@@ -50,6 +52,8 @@ func TestAdd_ReproValidation_BugConfirmed(t *testing.T) {
 				t.Errorf("[BUG CONFIRMED] conf file was written for invalid input "+
 					"(ip=%q name=%q):\nfile content: %q",
 					tc.ip, tc.name, string(data))
+				} else if !os.IsNotExist(readErr) {
+					t.Fatalf("unexpected read error for conf file: %v", readErr)
 			}
 		})
 	}
