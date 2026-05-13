@@ -10,9 +10,12 @@ import (
 
 const plistLabel = "com.pras-labs.local-auto-domain"
 
-func plistPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, "Library", "LaunchAgents", plistLabel+".plist")
+func plistPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("could not determine home directory: %w", err)
+	}
+	return filepath.Join(home, "Library", "LaunchAgents", plistLabel+".plist"), nil
 }
 
 func Install(binaryPath string) error {
@@ -39,7 +42,10 @@ func Install(binaryPath string) error {
 </plist>
 `, plistLabel, binaryPath)
 
-	path := plistPath()
+	path, err := plistPath()
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
@@ -56,7 +62,10 @@ func Install(binaryPath string) error {
 }
 
 func Uninstall() error {
-	path := plistPath()
+	path, err := plistPath()
+	if err != nil {
+		return err
+	}
 	// Unload (ignore error if not loaded)
 	out, err := exec.Command("launchctl", "unload", "-w", path).CombinedOutput()
 	if err != nil && !strings.Contains(string(out), "Could not find") {

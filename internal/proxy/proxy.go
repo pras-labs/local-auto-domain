@@ -20,6 +20,7 @@ type Proxy struct {
 	listener   net.Listener
 	quit       chan struct{}
 	wg         sync.WaitGroup
+	stopOnce   sync.Once
 }
 
 func New(bindIP string, listenPort, targetPort int) *Proxy {
@@ -61,10 +62,14 @@ func (p *Proxy) Start() error {
 }
 
 func (p *Proxy) Stop() {
-	close(p.quit)
-	if p.listener != nil {
-		p.listener.Close()
-	}
+	p.stopOnce.Do(func() {
+		close(p.quit)
+		if p.listener != nil {
+			if err := p.listener.Close(); err != nil {
+				log.Printf("proxy %s:%d close listener: %v", p.BindIP, p.ListenPort, err)
+			}
+		}
+	})
 	p.wg.Wait()
 }
 

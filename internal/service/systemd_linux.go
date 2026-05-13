@@ -9,12 +9,21 @@ import (
 
 const unitName = "local-auto-domain.service"
 
-func unitPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "systemd", "user", unitName)
+// unitPath returns the absolute path of the systemd user unit file.
+// It propagates any error from os.UserHomeDir() so callers never
+// receive an empty/relative path silently.
+func unitPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("unitPath: could not determine home directory: %w", err)
+	}
+	return filepath.Join(home, ".config", "systemd", "user", unitName), nil
 }
 
 func Install(binaryPath string) error {
+	if !filepath.IsAbs(binaryPath) {
+		return fmt.Errorf("binaryPath must be absolute, got: %q", binaryPath)
+	}
 	unit := fmt.Sprintf(`[Unit]
 Description=local-auto-domain daemon
 After=network.target
@@ -28,7 +37,10 @@ RestartSec=2
 WantedBy=default.target
 `, binaryPath)
 
-	path := unitPath()
+	path, err := unitPath()
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
@@ -36,7 +48,9 @@ WantedBy=default.target
 		return err
 	}
 
-	exec.Command("systemctl", "--user", "daemon-reload").Run()
+	if out, err := exec.Command("systemctl", "--user", "daemon-reload").CombinedOutput(); err != nil {
+		return fmt.Errorf("systemctl daemon-reload failed: %w\n%s", err, out)
+	}
 	if out, err := exec.Command("systemctl", "--user", "enable", "--now", unitName).CombinedOutput(); err != nil {
 		return fmt.Errorf("systemctl enable: %w\n%s", err, out)
 	}
@@ -46,10 +60,16 @@ WantedBy=default.target
 
 func Uninstall() error {
 	exec.Command("systemctl", "--user", "disable", "--now", unitName).Run()
-	if err := os.Remove(unitPath()); err != nil && !os.IsNotExist(err) {
+	path, err := unitPath()
+	if err != nil {
 		return err
 	}
-	exec.Command("systemctl", "--user", "daemon-reload").Run()
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := exec.Command("systemctl", "--user", "daemon-reload").Run(); err != nil {
+		return fmt.Errorf("systemctl daemon-reload failed: %w", err)
+	}
 	fmt.Printf("Service removed: %s\n", unitName)
 	return nil
 }
