@@ -68,12 +68,16 @@ func NewServer(store *StateStore) *Server {
 }
 
 func (s *Server) Start() error {
-	if err := os.MkdirAll(filepath.Dir(s.sockPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(s.sockPath), 0700); err != nil {
 		return err
 	}
 	os.Remove(s.sockPath)
 	ln, err := net.Listen("unix", s.sockPath)
 	if err != nil {
+		return err
+	}
+	if err := os.Chmod(s.sockPath, 0600); err != nil {
+		ln.Close()
 		return err
 	}
 	s.listener = ln

@@ -260,7 +260,7 @@ local-auto-domain/
     └── service/              # launchd / systemd unit install
 ```
 
-**IPC**: Daemon exposes `GET /state` over a Unix socket at `~/.local/share/local-auto-domain/daemon.sock`. CLI commands talk to it directly.
+**IPC**: Daemon exposes `GET /state` over a Unix socket at `~/.local/share/local-auto-domain/daemon.sock` (mode `0600`, directory `0700` — owner access only). CLI commands talk to it directly.
 
 **DNS**: The daemon maintains a single `hosts` file at `{dnsmasq.d}/local-auto-domain/hosts` registered with dnsmasq via `addn-hosts`. dnsmasq re-reads `addn-hosts` files on `SIGHUP` — no restart needed. (`conf-dir` entries are startup-only and are not re-read on SIGHUP; per-port `port-N.conf` state files exist solely for daemon-restart recovery.) On macOS, dnsmasq runs on port 5300 as a user-level LaunchAgent so the daemon can send SIGHUP without sudo. On Linux, a NOPASSWD sudoers rule written by `lad setup` allows `sudo systemctl reload dnsmasq` without a prompt. dnsmasq is pinned to `listen-address=127.0.0.1` + `bind-interfaces` to avoid conflicting with systemd-resolved's stub listener on `127.0.0.53:53`.
 

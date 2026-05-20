@@ -232,7 +232,7 @@ service_ports:
 
 ## IPC
 
-Daemon exposes `GET /state` over a Unix socket at `~/.local/share/local-auto-domain/daemon.sock`. CLI reads state without re-scanning.
+Daemon exposes `GET /state` over a Unix socket at `~/.local/share/local-auto-domain/daemon.sock` (mode `0600`, directory `0700` — owner access only). CLI reads state without re-scanning.
 
 ```go
 type Entry struct {
