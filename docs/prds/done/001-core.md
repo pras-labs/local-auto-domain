@@ -17,13 +17,13 @@ Developers who use `ssh -L` or `kubectl port-forward` to access remote services 
 
 ## Goals
 
-| Goal | Metric |
-| ---- | ------ |
-| Resolvable domain per port-forward | Within 2s of process start |
-| Zero port collision | Multiple services on same remote port independently addressable |
-| Zero runtime privilege | Daemon runs as current user after `lad setup` |
-| Automatic cleanup | Domain removed within 2s of process exit |
-| Single binary | No runtime Python, Node, or shell script dependencies |
+| Goal                               | Metric                                                          |
+| ---------------------------------- | --------------------------------------------------------------- |
+| Resolvable domain per port-forward | Within 2s of process start                                      |
+| Zero port collision                | Multiple services on same remote port independently addressable |
+| Zero runtime privilege             | Daemon runs as current user after `lad setup`                   |
+| Automatic cleanup                  | Domain removed within 2s of process exit                        |
+| Single binary                      | No runtime Python, Node, or shell script dependencies           |
 
 ### Non-Goals
 
@@ -38,14 +38,16 @@ Developers who use `ssh -L` or `kubectl port-forward` to access remote services 
 **Primary**: Backend/platform engineers who use SSH port-forwarding or `kubectl port-forward` to access databases, internal web services, or Kubernetes workloads.
 
 **Without lad**:
-```
+
+```bash
 ssh -fNL 127.0.0.1:5433:db.internal:5432 bastion
 ssh -fNL 127.0.0.1:8181:app.internal:80  bastion
 # 30 minutes later: which port was postgres again?
 ```
 
 **With lad**:
-```
+
+```bash
 ssh -fNL 127.0.0.1:5433:db.internal:5432 bastion
 ssh -fNL 127.0.0.1:8181:app.internal:80  bastion
 # auto-detected within 2s:
@@ -70,7 +72,7 @@ When the process exits, everything is cleaned up automatically.
 
 ## Architecture
 
-```
+```plaintext
 local-auto-domain/
 ├── cmd/local-auto-domain/    # CLI entry point (cobra)
 └── internal/
@@ -90,7 +92,8 @@ local-auto-domain/
 ```
 
 **Traffic path**:
-```
+
+```plaintext
 curl http://app-http.tunnel.test:8080
   → mDNSResponder → /etc/resolver/test → dnsmasq → 127.0.1.X
   → proxy 127.0.1.X:8080
@@ -105,6 +108,7 @@ curl http://app-http.tunnel.test:8080
 Pattern: `{identifier}-{service}.tunnel.test`
 
 **Identifier** (priority order):
+
 1. Override from config (`lad set <port> <name>`)
 2. SSH: remote host with dots replaced by dashes (`10.0.0.2` → `10-0-0-2`)
 3. kubectl: resource name stripped of type prefix (`svc/myapp` → `myapp`)
@@ -112,15 +116,15 @@ Pattern: `{identifier}-{service}.tunnel.test`
 
 **Service name** from remote port:
 
-| Remote port | Label |
-| ----------- | ----- |
-| 80          | http  |
-| 443         | https |
-| 5432        | pgsql |
-| 3306        | mysql |
-| 6379        | redis |
-| 27017       | mongo |
-| 6443        | k8s   |
+| Remote port | Label   |
+| ----------- | ------- |
+| 80          | http    |
+| 443         | https   |
+| 5432        | pgsql   |
+| 3306        | mysql   |
+| 6379        | redis   |
+| 27017       | mongo   |
+| 6443        | k8s     |
 | other       | port{N} |
 
 **Collision**: if two active forwards produce the same domain, local port is appended: `app-http-8181.tunnel.test`.
@@ -137,7 +141,7 @@ RFC 2606 reserves `.test` for testing; it is never delegated in global DNS and i
 
 Each port-forward gets a **unique loopback IP** from `127.0.1.0/24`. Multiple forwards to the same remote service port can each bind the service's canonical port because they are on different IPs.
 
-```
+```plaintext
 ssh -L 127.0.0.1:5433:db1.internal:5432  →  db1-internal-pgsql.tunnel.test  →  127.0.1.1:5432
 ssh -L 127.0.0.1:5434:db2.internal:5432  →  db2-internal-pgsql.tunnel.test  →  127.0.1.2:5432
 ```
@@ -179,7 +183,7 @@ dnsmasq is pinned to `127.0.0.1` via `listen-address=127.0.0.1` + `bind-interfac
 
 ## CLI Interface
 
-```
+```plaintext
 lad daemon              # Start daemon (foreground)
 lad setup               # One-time: install dnsmasq, resolver (requires sudo)
 lad uninstall           # Full uninstall (requires sudo)
@@ -194,7 +198,7 @@ lad version             # Print version
 
 `lad list` output:
 
-```
+```plaintext
 PORT   DOMAIN                         IP          PROXY   TOOL      PID    SINCE
 8080   argocd-server-http.tunnel.test 127.0.1.2   :8080   kubectl   5678   12m ago
 5433   10-0-0-4-pgsql.tunnel.test     127.0.1.3   :5432   ssh       9012   1m ago
@@ -251,26 +255,26 @@ type Entry struct {
 
 ## Privilege Model
 
-| Operation | Privilege |
-| --------- | --------- |
-| `lad setup` | sudo (once) |
-| `lad daemon` | current user |
-| `lad install-service` | current user |
-| `lad uninstall` | sudo (loopback aliases on macOS) |
+| Operation                       | Privilege                                                    |
+| ------------------------------- | ------------------------------------------------------------ |
+| `lad setup`                     | sudo (once)                                                  |
+| `lad daemon`                    | current user                                                 |
+| `lad install-service`           | current user                                                 |
+| `lad uninstall`                 | sudo (loopback aliases on macOS)                             |
 | Runtime dnsmasq updates (macOS) | current user — dnsmasq runs as user LaunchAgent on port 5300 |
-| Runtime dnsmasq updates (Linux) | `sudo systemctl reload dnsmasq` via NOPASSWD sudoers rule |
-| Loopback aliases (macOS) | created by root LaunchDaemon at boot; no runtime sudo |
+| Runtime dnsmasq updates (Linux) | `sudo systemctl reload dnsmasq` via NOPASSWD sudoers rule    |
+| Loopback aliases (macOS)        | created by root LaunchDaemon at boot; no runtime sudo        |
 
 ---
 
 ## Platform Support
 
-|                     | macOS                              | Linux                              |
-| ------------------- | ---------------------------------- | ---------------------------------- |
-| Socket detection    | `lsof`                             | `ss` + `/proc`                     |
-| DNS resolver config | `/etc/resolver/test` (port 5300)   | systemd-networkd + resolved (see PRD-003) |
-| Loopback aliases    | `ifconfig lo0 alias` via setup     | not needed (127.0.0.0/8 routable)  |
-| Service manager     | launchd (LaunchAgents)             | systemd --user                     |
+|                     | macOS                            | Linux                                     |
+| ------------------- | -------------------------------- | ----------------------------------------- |
+| Socket detection    | `lsof`                           | `ss` + `/proc`                            |
+| DNS resolver config | `/etc/resolver/test` (port 5300) | systemd-networkd + resolved (see PRD-003) |
+| Loopback aliases    | `ifconfig lo0 alias` via setup   | not needed (127.0.0.0/8 routable)         |
+| Service manager     | launchd (LaunchAgents)           | systemd --user                            |
 
 ---
 
@@ -278,7 +282,7 @@ type Entry struct {
 
 All common `ssh -L` forms are detected and parsed:
 
-```
+```bash
 ssh -L 127.0.0.1:8181:10.0.0.2:80 user@host
 ssh -NL 127.0.0.1:8181:10.0.0.2:80 user@host
 ssh -fNL 127.0.0.1:8181:10.0.0.2:80 user@host
@@ -293,7 +297,7 @@ Detection regex: `/-[a-zA-Z]*L/` (matches any combined flag group containing L).
 
 ## kubectl Compatibility
 
-```
+```bash
 kubectl port-forward svc/myapp 8080:80
 kubectl -n monitoring port-forward pod/grafana-abc 3000:3000
 kubectl port-forward svc/postgres 5432:5432
@@ -306,30 +310,30 @@ Resource name extracted by stripping `svc/`, `pod/`, `deploy/`, `deployment/`, `
 
 ## Data Storage
 
-| Path | Content |
-| ---- | ------- |
-| `~/.local/share/local-auto-domain/` | Runtime data directory |
-| `…/daemon.sock` | Unix socket for IPC |
-| `/etc/dnsmasq.d/local-auto-domain/hosts` | addn-hosts file — re-read by dnsmasq on SIGHUP |
-| `/etc/dnsmasq.d/local-auto-domain/port-N.conf` | Per-port state files (daemon restart recovery) |
-| `/etc/resolver/test` | macOS resolver routing |
-| `~/.config/local-auto-domain/config.yaml` | User configuration |
-| `~/Library/LaunchAgents/com.pras-labs.local-auto-domain.plist` | macOS login service |
-| `~/.config/systemd/user/local-auto-domain.service` | Linux login service |
-| `/Library/LaunchDaemons/com.pras-labs.local-auto-domain-lo.plist` | macOS boot loopback aliases |
+| Path                                                              | Content                                        |
+| ----------------------------------------------------------------- | ---------------------------------------------- |
+| `~/.local/share/local-auto-domain/`                               | Runtime data directory                         |
+| `…/daemon.sock`                                                   | Unix socket for IPC                            |
+| `/etc/dnsmasq.d/local-auto-domain/hosts`                          | addn-hosts file — re-read by dnsmasq on SIGHUP |
+| `/etc/dnsmasq.d/local-auto-domain/port-N.conf`                    | Per-port state files (daemon restart recovery) |
+| `/etc/resolver/test`                                              | macOS resolver routing                         |
+| `~/.config/local-auto-domain/config.yaml`                         | User configuration                             |
+| `~/Library/LaunchAgents/com.pras-labs.local-auto-domain.plist`    | macOS login service                            |
+| `~/.config/systemd/user/local-auto-domain.service`                | Linux login service                            |
+| `/Library/LaunchDaemons/com.pras-labs.local-auto-domain-lo.plist` | macOS boot loopback aliases                    |
 
 ---
 
 ## Decision Records
 
-| ADR | Decision |
-| --- | -------- |
-| [001](../../adr/001-use-tunnel-localhost-tld.md) | Original TLD choice (superseded by ADR-009) |
-| [002](../../adr/002-unique-loopback-ip-per-forward.md) | Unique 127.0.1.X IP per port-forward |
-| [003](../../adr/003-dnsmasq-drop-in-files-sighup.md) | Per-domain dnsmasq conf files + SIGHUP |
-| [004](../../adr/004-poll-based-process-detection.md) | Poll-based detection over kernel events |
-| [005](../../adr/005-unix-socket-http-ipc.md) | Unix socket HTTP for daemon ↔ CLI IPC |
-| [006](../../adr/006-macos-loopback-alias-strategy.md) | macOS loopback alias creation strategy |
-| [008](../../adr/008-identifier-service-domain-naming.md) | `{identifier}-{service}.tld` naming scheme |
-| [009](../../adr/009-tld-change-to-tunnel-test.md) | TLD change from `.tunnel.localhost` to `.tunnel.test` |
-| [010](../../adr/010-dnsmasq-addn-hosts-reload.md) | dnsmasq dynamic reload via addn-hosts; macOS port 5300 + user LaunchAgent; Linux sudoers |
+| ADR                                                      | Decision                                                                                 |
+| -------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| [001](../../adr/001-use-tunnel-localhost-tld.md)         | Original TLD choice (superseded by ADR-009)                                              |
+| [002](../../adr/002-unique-loopback-ip-per-forward.md)   | Unique 127.0.1.X IP per port-forward                                                     |
+| [003](../../adr/003-dnsmasq-drop-in-files-sighup.md)     | Per-domain dnsmasq conf files + SIGHUP                                                   |
+| [004](../../adr/004-poll-based-process-detection.md)     | Poll-based detection over kernel events                                                  |
+| [005](../../adr/005-unix-socket-http-ipc.md)             | Unix socket HTTP for daemon ↔ CLI IPC                                                    |
+| [006](../../adr/006-macos-loopback-alias-strategy.md)    | macOS loopback alias creation strategy                                                   |
+| [008](../../adr/008-identifier-service-domain-naming.md) | `{identifier}-{service}.tld` naming scheme                                               |
+| [009](../../adr/009-tld-change-to-tunnel-test.md)        | TLD change from `.tunnel.localhost` to `.tunnel.test`                                    |
+| [010](../../adr/010-dnsmasq-addn-hosts-reload.md)        | dnsmasq dynamic reload via addn-hosts; macOS port 5300 + user LaunchAgent; Linux sudoers |

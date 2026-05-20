@@ -17,12 +17,12 @@ There is no way to force a DNS server to "win" in the global scope without remov
 
 ## Goals
 
-| Goal | Metric |
-| ---- | ------ |
-| `tunnel.test` resolves via system resolver | `getent hosts myapp.tunnel.test` returns `127.0.1.X` |
-| Global DNS unaffected | `curl https://google.com` still works; DHCP-provided servers still used for non-`tunnel.test` |
-| Persistent across reboots | No manual steps after setup |
-| No interactive prompts at runtime | No sudo required during daemon operation |
+| Goal                                       | Metric                                                                                        |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------- |
+| `tunnel.test` resolves via system resolver | `getent hosts myapp.tunnel.test` returns `127.0.1.X`                                          |
+| Global DNS unaffected                      | `curl https://google.com` still works; DHCP-provided servers still used for non-`tunnel.test` |
+| Persistent across reboots                  | No manual steps after setup                                                                   |
+| No interactive prompts at runtime          | No sudo required during daemon operation                                                      |
 
 ---
 
@@ -30,14 +30,14 @@ There is no way to force a DNS server to "win" in the global scope without remov
 
 Six approaches were attempted before reaching a working solution. Each failure revealed a different constraint in systemd-resolved's `link_relevant()` function. See [ADR-011](../../adr/011-linux-split-dns-lad-dns-dummy-interface.md) for the full investigation.
 
-| Approach | Failure reason |
-| -------- | -------------- |
-| Global resolved drop-in (`DNS=` in `resolved.conf.d`) | `1.1.1.1` wins in the global scope; resolved doesn't fall back |
-| `resolvectl dns lo 127.0.0.1` | Requires `org.freedesktop.network1` D-Bus (systemd-networkd must be running) |
-| `.network` file for `lo` interface | `link_relevant()` returns false for `IFF_LOOPBACK` interfaces |
-| Dummy interface without an address | `link_relevant()` returns false if address set is empty |
-| Dummy interface + link-local address (`169.254.x.x`) | `link_relevant()` skips link-local addresses |
-| Dummy interface + `192.0.2.1/32 Scope=host` | `link_relevant()` skips `RT_SCOPE_HOST` addresses; networkd silently assigns host scope to `/32` on dummy interfaces |
+| Approach                                              | Failure reason                                                                                                       |
+| ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| Global resolved drop-in (`DNS=` in `resolved.conf.d`) | `1.1.1.1` wins in the global scope; resolved doesn't fall back                                                       |
+| `resolvectl dns lo 127.0.0.1`                         | Requires `org.freedesktop.network1` D-Bus (systemd-networkd must be running)                                         |
+| `.network` file for `lo` interface                    | `link_relevant()` returns false for `IFF_LOOPBACK` interfaces                                                        |
+| Dummy interface without an address                    | `link_relevant()` returns false if address set is empty                                                              |
+| Dummy interface + link-local address (`169.254.x.x`)  | `link_relevant()` skips link-local addresses                                                                         |
+| Dummy interface + `192.0.2.1/32 Scope=host`           | `link_relevant()` skips `RT_SCOPE_HOST` addresses; networkd silently assigns host scope to `/32` on dummy interfaces |
 
 ---
 
@@ -46,14 +46,16 @@ Six approaches were attempted before reaching a working solution. Each failure r
 Create a `lad-dns` dummy network interface managed by systemd-networkd with a globally-scoped address, giving systemd-resolved an isolated per-link DNS scope for `tunnel.test`.
 
 **`/etc/systemd/network/10-local-auto-domain-dns.netdev`**:
-```
+
+```ini
 [NetDev]
 Name=lad-dns
 Kind=dummy
 ```
 
 **`/etc/systemd/network/10-local-auto-domain-dns.network`**:
-```
+
+```ini
 [Match]
 Name=lad-dns
 
@@ -79,7 +81,8 @@ After `networkctl reload`, `resolvectl status lad-dns` shows `Current Scopes: DN
 systemd-resolved's stub listener binds `127.0.0.53:53`. Without explicit binding directives, dnsmasq opens a wildcard socket on `0.0.0.0:53`, which can race with the stub.
 
 `lad setup` writes to `/etc/dnsmasq.conf`:
-```
+
+```ini
 listen-address=127.0.0.1
 bind-interfaces
 ```
@@ -94,14 +97,14 @@ bind-interfaces
 
 `configureSplitDNS()` detects the active network manager at setup time:
 
-| Detected | Action |
-| -------- | ------ |
-| systemd-networkd | Write `.netdev` + `.network`; `networkctl reload` |
-| NetworkManager | Write files; enable networkd if no conflicting `.network`/`.netdev` files exist; `networkctl reload` |
-| dhcpcd | Write files (inert); print dhcpcd.conf guidance |
-| connman | Write files (inert); print connman DNS proxy guidance |
-| ifupdown | Write files (inert); print resolvconf / resolv.conf guidance |
-| none detected | Write files (inert); print generic start-networkd message |
+| Detected         | Action                                                                                               |
+| ---------------- | ---------------------------------------------------------------------------------------------------- |
+| systemd-networkd | Write `.netdev` + `.network`; `networkctl reload`                                                    |
+| NetworkManager   | Write files; enable networkd if no conflicting `.network`/`.netdev` files exist; `networkctl reload` |
+| dhcpcd           | Write files (inert); print dhcpcd.conf guidance                                                      |
+| connman          | Write files (inert); print connman DNS proxy guidance                                                |
+| ifupdown         | Write files (inert); print resolvconf / resolv.conf guidance                                         |
+| none detected    | Write files (inert); print generic start-networkd message                                            |
 
 ### NetworkManager coexistence
 
@@ -114,6 +117,7 @@ Before enabling networkd, `networkdConflict()` checks for pre-existing `.network
 ## Teardown
 
 `teardownSplitDNS()`:
+
 1. Removes `10-local-auto-domain-dns.netdev` and `10-local-auto-domain-dns.network`
 2. Runs `networkctl reload`
 3. If NetworkManager is also active (meaning networkd was enabled by setup), disables networkd again
@@ -136,25 +140,25 @@ See the README Linux section for detailed instructions.
 
 ## Data Storage
 
-| Path | Content |
-| ---- | ------- |
-| `/etc/systemd/network/10-local-auto-domain-dns.netdev` | lad-dns dummy interface definition |
+| Path                                                    | Content                                                                             |
+| ------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `/etc/systemd/network/10-local-auto-domain-dns.netdev`  | lad-dns dummy interface definition                                                  |
 | `/etc/systemd/network/10-local-auto-domain-dns.network` | lad-dns DNS routing config (DNS=127.0.0.1, ~tunnel.test, 192.0.2.1/32 Scope=global) |
-| `/etc/dnsmasq.conf` | Updated with `listen-address=127.0.0.1` and `bind-interfaces` |
-| `/etc/sudoers.d/local-auto-domain` | `NOPASSWD: /usr/bin/systemctl reload dnsmasq` |
+| `/etc/dnsmasq.conf`                                     | Updated with `listen-address=127.0.0.1` and `bind-interfaces`                       |
+| `/etc/sudoers.d/local-auto-domain`                      | `NOPASSWD: /usr/bin/systemctl reload dnsmasq`                                       |
 
 ---
 
 ## Implementation Files
 
-| File | Change |
-| ---- | ------ |
+| File                              | Change                                                                                                                                                           |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `internal/dnsmasq/setup_linux.go` | `writeNetworkdDNSConfig()`, `configureSplitDNS()`, `configureSplitDNSNM()`, `networkdConflict()`, `teardownSplitDNS()`, `ensureConf()` line-by-line matching fix |
 
 ---
 
 ## Decision Records
 
-| ADR | Decision |
-| --- | -------- |
+| ADR                                                             | Decision                                                                                                                        |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
 | [011](../../adr/011-linux-split-dns-lad-dns-dummy-interface.md) | Six-attempt investigation; final fix: lad-dns dummy with `192.0.2.1/32 Scope=global`; network manager detection; NM coexistence |

@@ -9,7 +9,7 @@
 
 When a port-forward targets a remote HTTPS service, the proxy is a plain TCP passthrough. The client sends a TLS ClientHello with SNI set to the local domain (e.g., `myapp-https.tunnel.test`), but the remote cert is issued for the actual hostname (`myapp.internal`). Certificate validation fails:
 
-```
+```bash
 ssh -L 127.0.0.1:8444:myapp.internal:443 user@host
 curl https://myapp-https.tunnel.test:8443
 # → curl: (60) SSL certificate problem: hostname mismatch
@@ -21,12 +21,12 @@ The workaround (`curl -k`) trains insecure habits and breaks browser access enti
 
 ## Goals
 
-| Goal | Metric |
-| ---- | ------ |
-| Trusted HTTPS | `curl https://<domain>` returns 200 without `-k` after one-time setup |
-| Green padlock in browsers | Safari, Chrome trust the cert without manual exception |
-| No external tools | cert generation uses Go stdlib only (no mkcert) |
-| Graceful degradation | if setup not run, falls back to plain TCP — no daemon crash |
+| Goal                      | Metric                                                                |
+| ------------------------- | --------------------------------------------------------------------- |
+| Trusted HTTPS             | `curl https://<domain>` returns 200 without `-k` after one-time setup |
+| Green padlock in browsers | Safari, Chrome trust the cert without manual exception                |
+| No external tools         | cert generation uses Go stdlib only (no mkcert)                       |
+| Graceful degradation      | if setup not run, falls back to plain TCP — no daemon crash           |
 
 ---
 
@@ -45,7 +45,8 @@ When the daemon detects a forward targeting remote port 443 or 8443, it starts a
 - Upstream connection uses `tls.Dial(InsecureSkipVerify: true)` → connects through the SSH tunnel regardless of the remote cert hostname
 
 **Traffic path**:
-```
+
+```plaintext
 curl https://myapp-https.tunnel.test:8443
   → TLS handshake (*.tunnel.test cert, trusted) → proxy 127.0.1.X:8443
   → TLS upstream (InsecureSkipVerify) → 127.0.0.1:localPort
@@ -70,10 +71,10 @@ curl https://myapp-https.tunnel.test:8443
 
 ## Trust Store Installation
 
-| Platform | Mechanism |
-| -------- | --------- |
-| macOS | `security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain` |
-| Linux | copy CA to system CA bundle + `update-ca-certificates` |
+| Platform | Mechanism                                                                         |
+| -------- | --------------------------------------------------------------------------------- |
+| macOS    | `security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain` |
+| Linux    | copy CA to system CA bundle + `update-ca-certificates`                            |
 
 **Homebrew curl / OpenSSL-based tools**: these link against their own CA bundle and do not use the system keychain. `lad setup` prints the env var needed: `CURL_CA_BUNDLE=~/.local/share/local-auto-domain/ca.crt`.
 
@@ -89,7 +90,7 @@ If `lad setup` has not been run (no cert files on disk), the daemon logs a warni
 
 `lad list` gains a TLS column:
 
-```
+```plaintext
 PORT   DOMAIN                              IP          PROXY   TLS   TOOL      PID    SINCE
 8444   10-0-0-5-https.tunnel.test          127.0.1.1   :8443   yes   ssh       1234   5m ago
 8080   argocd-server-http.tunnel.test      127.0.1.2   :8080   no    kubectl   5678   12m ago
@@ -101,31 +102,31 @@ PORT   DOMAIN                              IP          PROXY   TLS   TOOL      P
 
 ## Data Storage
 
-| Path | Content |
-| ---- | ------- |
-| `~/.local/share/local-auto-domain/ca.crt` | Local CA cert (install into trust store) |
-| `~/.local/share/local-auto-domain/ca.key` | Local CA private key (`0600`) |
-| `~/.local/share/local-auto-domain/wildcard.crt` | Wildcard leaf cert |
-| `~/.local/share/local-auto-domain/wildcard.key` | Wildcard leaf private key (`0600`) |
+| Path                                            | Content                                  |
+| ----------------------------------------------- | ---------------------------------------- |
+| `~/.local/share/local-auto-domain/ca.crt`       | Local CA cert (install into trust store) |
+| `~/.local/share/local-auto-domain/ca.key`       | Local CA private key (`0600`)            |
+| `~/.local/share/local-auto-domain/wildcard.crt` | Wildcard leaf cert                       |
+| `~/.local/share/local-auto-domain/wildcard.key` | Wildcard leaf private key (`0600`)       |
 
 ---
 
 ## Implementation Files
 
-| File | Purpose |
-| ---- | ------- |
-| `internal/tlscert/tlscert.go` | `EnsureCert(dataDir)` — generate CA + wildcard cert, load and validate existing |
-| `internal/tlscert/install_darwin.go` | `InstallCA(caFile)` via `security add-trusted-cert` |
-| `internal/tlscert/install_linux.go` | `InstallCA(caFile)` via copy + `update-ca-certificates` |
-| `internal/proxy/proxy.go` | `NewTLS(bindIP, listenPort, targetPort, cert)` — TLS listener + upstream dial |
-| `internal/daemon/daemon.go` | Load cert at start; use `NewTLS` when remote port is 443 or 8443 |
-| `internal/ipc/server.go` | `TLS bool` field in `Entry` |
-| `cmd/local-auto-domain/main.go` | `setup`: call `EnsureCert` + `InstallCA`; `list`: TLS column; `ca-cert` command |
+| File                                 | Purpose                                                                         |
+| ------------------------------------ | ------------------------------------------------------------------------------- |
+| `internal/tlscert/tlscert.go`        | `EnsureCert(dataDir)` — generate CA + wildcard cert, load and validate existing |
+| `internal/tlscert/install_darwin.go` | `InstallCA(caFile)` via `security add-trusted-cert`                             |
+| `internal/tlscert/install_linux.go`  | `InstallCA(caFile)` via copy + `update-ca-certificates`                         |
+| `internal/proxy/proxy.go`            | `NewTLS(bindIP, listenPort, targetPort, cert)` — TLS listener + upstream dial   |
+| `internal/daemon/daemon.go`          | Load cert at start; use `NewTLS` when remote port is 443 or 8443                |
+| `internal/ipc/server.go`             | `TLS bool` field in `Entry`                                                     |
+| `cmd/local-auto-domain/main.go`      | `setup`: call `EnsureCert` + `InstallCA`; `list`: TLS column; `ca-cert` command |
 
 ---
 
 ## Decision Records
 
-| ADR | Decision |
-| --- | -------- |
+| ADR                                              | Decision                                                                                     |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------- |
 | [007](../../adr/007-tls-termination-local-ca.md) | TLS termination with local CA + wildcard cert; Go stdlib only; `InsecureSkipVerify` upstream |
