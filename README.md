@@ -8,7 +8,7 @@ Automatically generates resolvable `.tunnel.test` domain names for `ssh -L` and 
 - [Installation](#installation)
   - [Prerequisites](#prerequisites)
   - [Build from source](#build-from-source)
-  - [One-time setup](#one-time-setup-requires-sudo)
+  - [One-time setup](#one-time-setup)
 - [Usage](#usage)
   - [Start the daemon](#start-the-daemon)
   - [Install as a system service](#install-as-a-system-service-auto-start-on-login)
@@ -49,12 +49,12 @@ ssh -fNL 127.0.0.1:8444:10.0.0.5:443  user@bastion
 
 Results in:
 
-| Domain                                | IP          | Proxy   | TLS | Forwards to      |
-| ------------------------------------- | ----------- | ------- | --- | ---------------- |
-| `10-0-0-2-http.tunnel.test`      | `127.0.1.1` | `:8080` | no  | `localhost:8181` |
-| `10-0-0-3-http.tunnel.test`      | `127.0.1.2` | `:8080` | no  | `localhost:8282` |
-| `10-0-0-4-pgsql.tunnel.test`     | `127.0.1.3` | `:5432` | no  | `localhost:5433` |
-| `10-0-0-5-https.tunnel.test`     | `127.0.1.4` | `:8443` | yes | `localhost:8444` |
+| Domain                       | IP          | Proxy   | TLS | Forwards to      |
+| ---------------------------- | ----------- | ------- | --- | ---------------- |
+| `10-0-0-2-http.tunnel.test`  | `127.0.1.1` | `:8080` | no  | `localhost:8181` |
+| `10-0-0-3-http.tunnel.test`  | `127.0.1.2` | `:8080` | no  | `localhost:8282` |
+| `10-0-0-4-pgsql.tunnel.test` | `127.0.1.3` | `:5432` | no  | `localhost:5433` |
+| `10-0-0-5-https.tunnel.test` | `127.0.1.4` | `:8443` | yes | `localhost:8444` |
 
 Access with:
 
@@ -80,10 +80,10 @@ go build -o lad ./cmd/local-auto-domain
 sudo mv lad /usr/local/bin/
 ```
 
-### One-time setup (requires sudo)
+### One-time setup
 
 ```bash
-sudo lad setup
+lad setup
 ```
 
 This performs all first-run configuration:
@@ -272,25 +272,25 @@ local-auto-domain/
 
 ## Privilege model
 
-| Operation                | Privilege needed                                  |
-| ------------------------ | ------------------------------------------------- |
-| `lad setup`              | sudo (once)                                       |
-| `lad daemon`             | user                                              |
-| `lad install-service`    | user                                              |
-| `lad uninstall`          | sudo (removes system CA, loopback aliases)        |
+| Operation                       | Privilege needed                                          |
+| ------------------------------- | --------------------------------------------------------- |
+| `lad setup`                     | user — prompts for password when performing system ops    |
+| `lad daemon`                    | user                                                      |
+| `lad install-service`           | user                                                      |
+| `lad uninstall`                 | user — prompts for password when removing system CA/aliases |
 | Runtime dnsmasq updates (macOS) | user — dnsmasq runs as user LaunchAgent on port 5300      |
 | Runtime dnsmasq updates (Linux) | `sudo systemctl reload dnsmasq` via NOPASSWD sudoers rule |
 | Loopback aliases (macOS)        | created by LaunchDaemon at boot; no runtime sudo          |
 
 ## Platforms
 
-|                     | macOS                            | Linux                             |
-| ------------------- | -------------------------------- | --------------------------------- |
-| Socket detection    | `lsof`                           | `ss` + `/proc`                    |
+|                     | macOS                            | Linux                                                          |
+| ------------------- | -------------------------------- | -------------------------------------------------------------- |
+| Socket detection    | `lsof`                           | `ss` + `/proc`                                                 |
 | DNS resolver config | `/etc/resolver/test` (port 5300) | `lad-dns` dummy interface (networkd + resolved per-link scope) |
-| Loopback aliases    | `ifconfig lo0 alias` (setup)     | not needed (127.0.0.0/8 routable) |
-| Service manager     | launchd                          | systemd --user                    |
-| CA trust store      | system keychain (`security`)     | `update-ca-certificates`          |
+| Loopback aliases    | `ifconfig lo0 alias` (setup)     | not needed (127.0.0.0/8 routable)                              |
+| Service manager     | launchd                          | systemd --user                                                 |
+| CA trust store      | system keychain (`security`)     | `update-ca-certificates`                                       |
 
 ### Linux distros without systemd-resolved or systemd-networkd
 
