@@ -8,7 +8,7 @@ Automatically generates resolvable `.tunnel.test` domain names for `ssh -L` and 
 - [Installation](#installation)
   - [Prerequisites](#prerequisites)
   - [Build from source](#build-from-source)
-  - [One-time setup](#one-time-setup-requires-sudo)
+  - [One-time setup](#one-time-setup)
 - [Usage](#usage)
   - [Start the daemon](#start-the-daemon)
   - [Install as a system service](#install-as-a-system-service-auto-start-on-login)
@@ -80,7 +80,7 @@ go build -o lad ./cmd/local-auto-domain
 sudo mv lad /usr/local/bin/
 ```
 
-### One-time setup (requires sudo)
+### One-time setup
 
 ```bash
 lad setup
@@ -274,10 +274,10 @@ local-auto-domain/
 
 | Operation                       | Privilege needed                                          |
 | ------------------------------- | --------------------------------------------------------- |
-| `lad setup`                     | sudo (once)                                               |
+| `lad setup`                     | user — prompts for password when performing system ops    |
 | `lad daemon`                    | user                                                      |
 | `lad install-service`           | user                                                      |
-| `lad uninstall`                 | sudo (removes system CA, loopback aliases)                |
+| `lad uninstall`                 | user — prompts for password when removing system CA/aliases |
 | Runtime dnsmasq updates (macOS) | user — dnsmasq runs as user LaunchAgent on port 5300      |
 | Runtime dnsmasq updates (Linux) | `sudo systemctl reload dnsmasq` via NOPASSWD sudoers rule |
 | Loopback aliases (macOS)        | created by LaunchDaemon at boot; no runtime sudo          |
