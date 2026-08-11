@@ -50,7 +50,7 @@ ssh -fNL 127.0.0.1:8444:10.0.0.5:443  user@bastion
 Results in:
 
 | Domain                       | IP          | Proxy   | TLS | Forwards to      |
-| ---------------------------- | ----------- | ------- | --- | ---------------- |
+| ----------------------------- | ----------- | ------- | --- | ---------------- |
 | `10-0-0-2-http.tunnel.test`  | `127.0.1.1` | `:8080` | no  | `localhost:8181` |
 | `10-0-0-3-http.tunnel.test`  | `127.0.1.2` | `:8080` | no  | `localhost:8282` |
 | `10-0-0-4-pgsql.tunnel.test` | `127.0.1.3` | `:5432` | no  | `localhost:5433` |
@@ -173,7 +173,7 @@ Domains follow the pattern `{identifier}-{service}.tunnel.test`.
 
 **Identifier** (in priority order):
 
-1. Override from config (`lad set <port> <name>`)
+1. Override from config (`lad set <port> <n>`)
 2. SSH: remote host with dots replaced by dashes (`10.0.0.2` → `10-0-0-2`)
 3. kubectl: resource name from `svc/name`, `pod/name`, etc.
 4. Fallback: `port-{localPort}`
@@ -260,7 +260,7 @@ local-auto-domain/
     └── service/              # launchd / systemd unit install
 ```
 
-**IPC**: Daemon exposes `GET /state` over a Unix socket at `~/.local/share/local-auto-domain/daemon.sock` (mode `0600`, directory `0700` — owner access only). CLI commands talk to it directly.
+**IPC**: Daemon exposes `GET /state` over a Unix socket at `$XDG_RUNTIME_DIR/local-auto-domain/daemon.sock` when `XDG_RUNTIME_DIR` is set, otherwise `~/.local/share/local-auto-domain/daemon.sock` (socket mode `0600`, parent directory `0700` — owner access only). CLI commands talk to it directly.
 
 **DNS**: The daemon maintains a single `hosts` file at `{dnsmasq.d}/local-auto-domain/hosts` registered with dnsmasq via `addn-hosts`. dnsmasq re-reads `addn-hosts` files on `SIGHUP` — no restart needed. (`conf-dir` entries are startup-only and are not re-read on SIGHUP; per-port `port-N.conf` state files exist solely for daemon-restart recovery.) On macOS, dnsmasq runs on port 5300 as a user-level LaunchAgent so the daemon can send SIGHUP without sudo. On Linux, a NOPASSWD sudoers rule written by `lad setup` allows `sudo systemctl reload dnsmasq` without a prompt. dnsmasq is pinned to `listen-address=127.0.0.1` + `bind-interfaces` to avoid conflicting with systemd-resolved's stub listener on `127.0.0.53:53`.
 
@@ -273,7 +273,7 @@ local-auto-domain/
 ## Privilege model
 
 | Operation                       | Privilege needed                                          |
-| ------------------------------- | --------------------------------------------------------- |
+| -------------------------------- | ----------------------------------------------------------- |
 | `lad setup`                     | user — prompts for password when performing system ops    |
 | `lad daemon`                    | user                                                      |
 | `lad install-service`           | user                                                      |
@@ -285,7 +285,7 @@ local-auto-domain/
 ## Platforms
 
 |                     | macOS                            | Linux                                                          |
-| ------------------- | -------------------------------- | -------------------------------------------------------------- |
+| ------------------- | --------------------------------- | ---------------------------------------------------------------- |
 | Socket detection    | `lsof`                           | `ss` + `/proc`                                                 |
 | DNS resolver config | `/etc/resolver/test` (port 5300) | `lad-dns` dummy interface (networkd + resolved per-link scope) |
 | Loopback aliases    | `ifconfig lo0 alias` (setup)     | not needed (127.0.0.0/8 routable)                              |
