@@ -312,8 +312,9 @@ Resource name extracted by stripping `svc/`, `pod/`, `deploy/`, `deployment/`, `
 
 | Path                                                              | Content                                        |
 | --------------------------------------------------------------------| --------------------------------------------------|
-| `~/.local/share/local-auto-domain/`                               | Runtime data directory                         |
-| `…/daemon.sock`                                                   | Unix socket for IPC                            |
+| `$XDG_RUNTIME_DIR/local-auto-domain/`                              | Runtime data directory — used when `XDG_RUNTIME_DIR` is set |
+| `~/.local/share/local-auto-domain/`                                | Runtime data directory — fallback when `XDG_RUNTIME_DIR` is unset |
+| `…/daemon.sock`                                                   | Unix socket for IPC, under whichever data directory above applies |
 | `/etc/dnsmasq.d/local-auto-domain/hosts`                          | addn-hosts file — re-read by dnsmasq on SIGHUP |
 | `/etc/dnsmasq.d/local-auto-domain/port-N.conf`                    | Per-port state files (daemon restart recovery) |
 | `/etc/resolver/test`                                              | macOS resolver routing                         |
