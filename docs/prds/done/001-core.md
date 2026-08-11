@@ -18,7 +18,7 @@ Developers who use `ssh -L` or `kubectl port-forward` to access remote services 
 ## Goals
 
 | Goal                               | Metric                                                          |
-| ---------------------------------- | --------------------------------------------------------------- |
+| ----------------------------------- | ------------------------------------------------------------------ |
 | Resolvable domain per port-forward | Within 2s of process start                                      |
 | Zero port collision                | Multiple services on same remote port independently addressable |
 | Zero runtime privilege             | Daemon runs as current user after `lad setup`                   |
@@ -109,7 +109,7 @@ Pattern: `{identifier}-{service}.tunnel.test`
 
 **Identifier** (priority order):
 
-1. Override from config (`lad set <port> <name>`)
+1. Override from config (`lad set <port> <n>`)
 2. SSH: remote host with dots replaced by dashes (`10.0.0.2` → `10-0-0-2`)
 3. kubectl: resource name stripped of type prefix (`svc/myapp` → `myapp`)
 4. Fallback: `port-{localPort}`
@@ -177,7 +177,7 @@ dnsmasq is pinned to `127.0.0.1` via `listen-address=127.0.0.1` + `bind-interfac
 
 ### Note on DNS verification tools
 
-`host`, `dig`, `nslookup` bypass mDNSResponder / systemd-resolved per-domain routing and return NXDOMAIN for `.test` — expected. Use `dns-sd -q <name> A` (macOS) or `getent hosts <name>` (Linux) to verify resolution.
+`host`, `dig`, `nslookup` bypass mDNSResponder / systemd-resolved per-domain routing and return NXDOMAIN for `.test` — expected. Use `dns-sd -q <n> A` (macOS) or `getent hosts <n>` (Linux) to verify resolution.
 
 ---
 
@@ -189,7 +189,7 @@ lad setup               # One-time: install dnsmasq, resolver (requires sudo)
 lad uninstall           # Full uninstall (requires sudo)
 lad list                # List active port-forward → domain mappings
 lad status              # Daemon running? Service installed? Active count?
-lad set <port> <name>   # Override domain identifier for a port
+lad set <port> <n>   # Override domain identifier for a port
 lad unset <port>        # Remove override
 lad install-service     # Register daemon as login service (launchd / systemd --user)
 lad uninstall-service   # Remove login service
@@ -232,7 +232,7 @@ service_ports:
 
 ## IPC
 
-Daemon exposes `GET /state` over a Unix socket at `~/.local/share/local-auto-domain/daemon.sock` (mode `0600`, directory `0700` — owner access only). CLI reads state without re-scanning.
+Daemon exposes `GET /state` over a Unix socket at `$XDG_RUNTIME_DIR/local-auto-domain/daemon.sock` when `XDG_RUNTIME_DIR` is set, falling back to `~/.local/share/local-auto-domain/daemon.sock` otherwise (mode `0600`, directory `0700` — owner access only). CLI reads state without re-scanning.
 
 ```go
 type Entry struct {
@@ -256,7 +256,7 @@ type Entry struct {
 ## Privilege Model
 
 | Operation                       | Privilege                                                    |
-| ------------------------------- | ------------------------------------------------------------ |
+| ---------------------------------| ---------------------------------------------------------------|
 | `lad setup`                     | sudo (once)                                                  |
 | `lad daemon`                    | current user                                                 |
 | `lad install-service`           | current user                                                 |
@@ -270,7 +270,7 @@ type Entry struct {
 ## Platform Support
 
 |                     | macOS                            | Linux                                     |
-| ------------------- | -------------------------------- | ----------------------------------------- |
+| ------------------- | --------------------------------- | -------------------------------------------|
 | Socket detection    | `lsof`                           | `ss` + `/proc`                            |
 | DNS resolver config | `/etc/resolver/test` (port 5300) | systemd-networkd + resolved (see PRD-003) |
 | Loopback aliases    | `ifconfig lo0 alias` via setup   | not needed (127.0.0.0/8 routable)         |
@@ -311,7 +311,7 @@ Resource name extracted by stripping `svc/`, `pod/`, `deploy/`, `deployment/`, `
 ## Data Storage
 
 | Path                                                              | Content                                        |
-| ----------------------------------------------------------------- | ---------------------------------------------- |
+| --------------------------------------------------------------------| --------------------------------------------------|
 | `~/.local/share/local-auto-domain/`                               | Runtime data directory                         |
 | `…/daemon.sock`                                                   | Unix socket for IPC                            |
 | `/etc/dnsmasq.d/local-auto-domain/hosts`                          | addn-hosts file — re-read by dnsmasq on SIGHUP |
@@ -327,7 +327,7 @@ Resource name extracted by stripping `svc/`, `pod/`, `deploy/`, `deployment/`, `
 ## Decision Records
 
 | ADR                                                      | Decision                                                                                 |
-| -------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| ---------------------------------------------------------| ---------------------------------------------------------------------------------------- |
 | [001](../../adr/001-use-tunnel-localhost-tld.md)         | Original TLD choice (superseded by ADR-009)                                              |
 | [002](../../adr/002-unique-loopback-ip-per-forward.md)   | Unique 127.0.1.X IP per port-forward                                                     |
 | [003](../../adr/003-dnsmasq-drop-in-files-sighup.md)     | Per-domain dnsmasq conf files + SIGHUP                                                   |
