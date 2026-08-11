@@ -1,6 +1,7 @@
 package ipc
 
 import (
+	"context"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -67,7 +68,7 @@ func NewServer(store *StateStore) *Server {
 	return &Server{store: store, sockPath: SocketPath()}
 }
 
-func (s *Server) Start() error {
+func (s *Server) Start(ctx context.Context) error {
 	dir := filepath.Dir(s.sockPath)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
@@ -79,7 +80,8 @@ func (s *Server) Start() error {
 		return err
 	}
 	os.Remove(s.sockPath)
-	ln, err := net.Listen("unix", s.sockPath)
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(ctx, "unix", s.sockPath)
 	if err != nil {
 		return err
 	}
