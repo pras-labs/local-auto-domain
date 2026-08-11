@@ -1,6 +1,7 @@
 package ipc
 
 import (
+	"context"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -67,13 +68,25 @@ func NewServer(store *StateStore) *Server {
 	return &Server{store: store, sockPath: SocketPath()}
 }
 
-func (s *Server) Start() error {
-	if err := os.MkdirAll(filepath.Dir(s.sockPath), 0755); err != nil {
+func (s *Server) Start(ctx context.Context) error {
+	dir := filepath.Dir(s.sockPath)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	// MkdirAll only applies the mode to newly created path components, so an
+	// existing directory from a prior version (e.g. 0755) would otherwise stay
+	// permissive. Chmod explicitly so upgrades are tightened too.
+	if err := os.Chmod(dir, 0700); err != nil {
 		return err
 	}
 	os.Remove(s.sockPath)
-	ln, err := net.Listen("unix", s.sockPath)
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(ctx, "unix", s.sockPath)
 	if err != nil {
+		return err
+	}
+	if err := os.Chmod(s.sockPath, 0600); err != nil {
+		ln.Close()
 		return err
 	}
 	s.listener = ln

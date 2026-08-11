@@ -58,7 +58,7 @@ func New(cfg *config.Config, sc scanner.Scanner) *Daemon {
 }
 
 func (d *Daemon) Run(ctx context.Context) error {
-	if err := d.ipcSrv.Start(); err != nil {
+	if err := d.ipcSrv.Start(ctx); err != nil {
 		return fmt.Errorf("IPC server: %w", err)
 	}
 	defer d.ipcSrv.Stop()
