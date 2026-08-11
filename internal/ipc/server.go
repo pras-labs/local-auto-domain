@@ -68,7 +68,14 @@ func NewServer(store *StateStore) *Server {
 }
 
 func (s *Server) Start() error {
-	if err := os.MkdirAll(filepath.Dir(s.sockPath), 0700); err != nil {
+	dir := filepath.Dir(s.sockPath)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	// MkdirAll only applies the mode to newly created path components, so an
+	// existing directory from a prior version (e.g. 0755) would otherwise stay
+	// permissive. Chmod explicitly so upgrades are tightened too.
+	if err := os.Chmod(dir, 0700); err != nil {
 		return err
 	}
 	os.Remove(s.sockPath)
